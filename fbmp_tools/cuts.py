@@ -290,13 +290,23 @@ def cut(capf: CapForces, p0: Sequence[float], p1: Sequence[float], tol: float = 
     fb, mb = side(s < -tol)
     on = np.abs(s) <= tol
     fo, mo = side(on)
-    moment_a = ma @ axis
-    moment_b = -(mb @ axis)
+    raw_a = ma @ axis
+    raw_b = -(mb @ axis)
+    couple = mo @ axis                       # moments applied on the line itself (column, pile head)
+    # Small errors in the read forces grow with the size of the free body, so the section values are
+    # taken from the lighter side; the other face follows from the loads on the line.
+    weight = np.abs(capf.force[:, :, 2]).sum(axis=0)
+    if weight[s > tol].sum() <= weight[s < -tol].sum():
+        moment_a, moment_b = raw_a, raw_a + couple
+        shear_a, shear_b = fa[:, 2], fa[:, 2] + fo[:, 2]
+    else:
+        moment_a, moment_b = raw_b - couple, raw_b
+        shear_a, shear_b = -fb[:, 2] - fo[:, 2], -fb[:, 2]
     return CutResult(
         combos=capf.combos, moment_a=moment_a, moment_b=moment_b,
-        shear_a=fa[:, 2], shear_b=-fb[:, 2],
+        shear_a=shear_a, shear_b=shear_b,
         torsion=ma @ n, axial=fa @ n, in_plane_shear=fa @ axis,
-        unbalance=moment_a + mo @ axis - moment_b, on_line=int(on.sum()),
+        unbalance=raw_a + couple - raw_b, on_line=int(on.sum()),
     )
 
 

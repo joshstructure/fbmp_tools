@@ -61,6 +61,7 @@ class InFile:
     sections: List[str]                 # per line: '', 'NAME', 'NAME#HEADER', 'NAME#END'
     newline: str = "\r\n"
     loads: List[LoadLine] = field(default_factory=list)
+    unparsed: List[int] = field(default_factory=list)   # LOAD / LOADBP line indexes that were not understood
 
     def case_types(self) -> Dict[int, str]:
         """Load case number -> load type label."""
@@ -127,6 +128,8 @@ def parse_in(data) -> InFile:
                     tuple(m.group(f"f{k}") for k in range(1, 7)), t.group(1) if t else "",
                     "", m.group("pre"), m.group("mid"), m.group("rest"),
                 ))
+            elif line.strip():
+                infile.unparsed.append(i)
         elif sec == "LOADBP":
             m = _LOADBP.match(line)
             if m:
@@ -136,4 +139,6 @@ def parse_in(data) -> InFile:
                     tuple(m.group(f"f{k}") for k in range(1, 7)), t.group(1) if t else "",
                     m.group("side"), m.group("pre"), m.group("mid"), m.group("rest1"), m.group("rest2"),
                 ))
+            elif line.strip():
+                infile.unparsed.append(i)
     return infile

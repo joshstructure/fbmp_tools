@@ -94,7 +94,7 @@ class AuditRow:
 class Resultant:
     case: int
     type: str
-    before: Tuple[float, ...]     # Fx Fy Fz Mx My Mz about the mirror center (moments in force x length units)
+    before: Tuple[float, ...]     # Fx Fy Fz Mx My Mz about the mirror center (kips, kip-ft)
     after: Tuple[float, ...]
     expected: Tuple[float, ...]
 
@@ -198,6 +198,19 @@ class _Geometry:
         row = self.brg_l if side == "L" else self.brg_r
         return row[index - 1] if 0 < index <= len(row) else None
 
+    def mirror_bearing(self, node: Node, direction: str):
+        """Bearing at the mirror point.  When both rows are equally near (rows at the same plan
+        position), Mirror X keeps the row and Mirror Y / XY changes it."""
+        tx, ty = self.mirror_point(node.x, node.y, direction)
+        dist = [math.sqrt((c.x - tx) ** 2 + (c.y - ty) ** 2 + (c.z - node.z) ** 2) for c in self.bearing]
+        best = min(dist)
+        want = node.group if "Y" not in direction else ("bearingR" if node.group == "bearingL" else "bearingL")
+        near = [c for c, d in zip(self.bearing, dist) if d <= best + 0.01]
+        for cand in near:
+            if cand.group == want:
+                return cand, best
+        return near[0], best
+
     def bearing_id(self, node: Node) -> Tuple[int, str]:
         if node.group == "bearingL":
             return self.brg_l.index(node) + 1, "L"
@@ -250,7 +263,7 @@ def mirror_loads(
         else:
             src = geo.bearing_node(ld.target, ld.side)
             if src is not None:
-                best, dist, _, _ = geo.nearest(src, direction, geo.bearing)
+                best, dist = geo.mirror_bearing(src, direction)
                 new_target, new_side = geo.bearing_id(best)
                 new_pos = (best.x, best.y, best.z)
                 if dist > 1.0:
@@ -276,6 +289,15 @@ def mirror_loads(
             out_lines[i] = out_lines[i].rstrip() + suffix
             break
 
+    if infile.unparsed:
+        warnings.append(f"{len(infile.unparsed)} line(s) in the LOAD / LOADBP sections were not understood and are copied "
+                        f"unchanged (first: line {infile.unparsed[0] + 1}). Check those loads by hand.")
+    loose = [m for m in node_map.values() if 3.0 < m.offset <= tolerance]
+    if loose:
+        worst = max(loose, key=lambda m: m.offset)
+        warnings.append(f"{len(loose)} loaded node(s) have no node at their mirror point and were moved to the nearest one, "
+                        f"up to {worst.offset:.1f} away (node {worst.node} to node {worst.new_node}, {worst.kind}). "
+                        "Expected for as-built piles; the mirrored resultant shifts slightly.")
     if missing:
         warnings.append("Nodes not found in the .out file (load left on the same node): "
                         + ", ".join(str(n) for n in sorted(missing)))
@@ -443,10 +465,10 @@ def build_resultants(changes: Sequence[LoadChange], geo: _Geometry, direction: s
             tot[0] += fx
             tot[1] += fy
             tot[2] += fz
-            # moments stay in the file's force x length units; applied moments are added as written
-            tot[3] += ry * fz - rz * fy + mx
-            tot[4] += rz * fx - rx * fz + my
-            tot[5] += rx * fy - ry * fx + mz
+            # reported in kip-ft: coordinates are inches, applied moments are entered in kip-ft
+            tot[3] += (ry * fz - rz * fy) / 12.0 + mx
+            tot[4] += (rz * fx - rx * fz) / 12.0 + my
+            tot[5] += (rx * fy - ry * fx) / 12.0 + mz
     out = []
     for case in sorted(sums):
         rec = sums[case]
@@ -485,7 +507,7 @@ def format_report(result: MirrorResult) -> str:
     for kind, items in kinds.items():
         out.append(f"  {kind:<8} {len(items):4d} nodes, largest offset from the ideal mirror point = "
                    f"{max(i.offset for i in items):.2f}")
-    out += ["", "Resultants of the mirrored cases about the mirror planes (file units):",
+    out += ["", "Resultants of the mirrored cases about the mirror planes (kips, kip-ft; model in kips and inches):",
             "  case  type     " + "".join(f"{c + '(new)':>13}{c + '(exp)':>13}" for c in COMPONENTS)]
     for r in result.resultants:
         out.append(f"  {r.case:<5d} {r.type:<8s}" + "".join(f"{a:13.2f}{e:13.2f}" for a, e in zip(r.after, r.expected)))

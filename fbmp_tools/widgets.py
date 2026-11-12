@@ -112,6 +112,9 @@ class FbmpApp:
                           f"{len(m.combos)} load combinations")
                     print(f"Pile cap X {x0:.1f} to {x1:.1f}, Y {y0:.1f} to {y1:.1f}; "
                           f"mirror planes X = {(x0 + x1) / 2:.2f}, Y = {(y0 + y1) / 2:.2f}")
+                    if self.infile.unparsed:
+                        print(f"WARNING: {len(self.infile.unparsed)} line(s) in LOAD / LOADBP were not understood "
+                              f"(first: line {self.infile.unparsed[0] + 1}); they will be copied unchanged.")
                     missing = [ld.target for ld in self.infile.loads if ld.section == "LOAD" and ld.target not in m.nodes]
                     if missing:
                         print(f"WARNING: {len(set(missing))} loaded node(s) are not in the .out file. "
@@ -380,7 +383,8 @@ class FbmpApp:
                 display(HTML(f"<table style='border-collapse:collapse;font-size:13px'>{head}{''.join(rows)}</table>"
                              "<div style='font-size:12px;color:#666'>Totals across the full cut, from statics of the pile cap "
                              "(pile heads, columns, self weight, cap loads). Statics check = moment that does not close "
-                             "between the two sides of the cut.</div>"))
+                             "between the two sides of the cut; values are taken from the lighter side. A column or pile on the line "
+                             "applies its moment at the cut, so the two faces differ there and the larger is reported.</div>"))
                 per_combo.show()
                 shear_fig.show()
                 if sweep_axis:
