@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+fbmp_mirror_out/
+fbmp_tools_pkg/
+.scratch*/
+# model files stay out of the repository
+*.in
+*.out
+*.XML
