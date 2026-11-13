@@ -321,19 +321,18 @@ def _perp(d):
 def add_loads(fig: go.Figure, changes, case: int, show_before: bool = True, show_after: bool = True,
               components: Sequence[str] = ("Fx", "Fy", "Fz", "Mx", "My", "Mz"), length: Optional[float] = None,
               label_min: float = 0.0) -> go.Figure:
-    """Draw the loads of one case: before mirroring in blue, after in red.
+    """Draw the loads of one case, component by component: before mirroring in blue, after in red.
 
-    Forces are straight arrows that start at the loaded node or bearing and point the way the
-    force acts; length is proportional to the force (resultant of the chosen force components)
-    and the largest force is ``length`` long (display units; default 12 % of the cap size).
-    Moments are curved arrows around the moment axis, turning by the right-hand rule; the
-    radius is proportional to the moment.  Magnitudes are written at the arrow heads and
-    every arrow shows all six components on hover.
+    Every force component is its own straight arrow along its global axis (Fz is vertical; +Fz is
+    down, as in FB-MultiPier), starting at the loaded node or bearing and pointing the way it acts.
+    Length is proportional to the value; the largest force component is ``length`` long (display
+    units; default 12 % of the model size).  Every moment component is a curved arrow around its
+    global axis, turning by the right-hand rule, with radius proportional to the value.  Each arrow
+    is labelled with its signed value and shows all six components on hover.
     """
     _drop(fig, "load")
     k_scale = _scale(fig)
-    f_idx = [i for i, c in enumerate(_COMPONENTS[:3]) if c in components]
-    m_idx = [i for i, c in enumerate(_COMPONENTS[3:], start=3) if c in components]
+    chosen = [i for i, c in enumerate(_COMPONENTS) if c in components]
     if not length:
         length = 0.12 * _span(fig)
     sets = []
@@ -348,65 +347,64 @@ def add_loads(fig: go.Figure, changes, case: int, show_before: bool = True, show
             pos = ch.new_pos if after else ch.pos
             if pos is None:
                 continue
-            vals = ch.after if after else ch.before
-            fvec = [float(vals[i]) if i in f_idx else 0.0 for i in range(3)]
-            mvec = [float(vals[i]) if i in m_idx else 0.0 for i in range(3, 6)]
-            fmag = math.sqrt(sum(c * c for c in fvec))
-            mmag = math.sqrt(sum(c * c for c in mvec))
-            if fmag <= 0.0 and mmag <= 0.0:
+            vals = [float(x) for x in (ch.after if after else ch.before)]
+            if not any(vals[i] for i in chosen):
                 continue
-            items.append((ch, tuple(c * k_scale for c in pos), fvec, fmag, mvec, mmag, vals,
-                          ch.new_label if after else ch.label))
+            items.append((ch, tuple(c * k_scale for c in pos), vals, ch.new_label if after else ch.label))
         sets.append((name, color, after, items))
-    fmax = max([it[3] for s in sets for it in s[3]] or [0.0])
-    mmax = max([it[5] for s in sets for it in s[3]] or [0.0])
+    fmax = max([abs(it[2][i]) for s in sets for it in s[3] for i in chosen if i < 3] or [0.0])
+    mmax = max([abs(it[2][i]) for s in sets for it in s[3] for i in chosen if i >= 3] or [0.0])
     if fmax <= 0.0 and mmax <= 0.0:
         return fig
-    f_names = "+".join(_COMPONENTS[i] for i in f_idx)
-    m_names = "+".join(_COMPONENTS[i] for i in m_idx)
     for name, color, after, items in sets:
         if not items:
             continue
         g = _Glyphs()
-        for ch, pos, fvec, fmag, mvec, mmag, vals, lab in items:
+        for ch, pos, vals, lab in items:
             where = "bearing" if ch.line.section == "LOADBP" else "node"
             detail = (f"{ch.line.type}, case {ch.line.case}, {'after mirroring' if after else 'before'}<br>{where} {lab}<br>"
                       + ", ".join(f"{c} {x:.4g}" for c, x in zip(_COMPONENTS[:3], vals[:3])) + " kips<br>"
                       + ", ".join(f"{c} {x:.4g}" for c, x in zip(_COMPONENTS[3:], vals[3:])) + " kip-ft")
-            if fmag > 0.0:
-                text = f"<b>{fmag:.4g} kips</b> ({f_names})<br>" + detail
-                L = max(length * fmag / fmax, 0.03 * length)
-                d = tuple(c / fmag for c in fvec)
-                tip = tuple(p + c * L for p, c in zip(pos, d))
-                base = g.head(tip, d, min(L, max(0.28 * L, 0.035 * length)), text)
-                g.path([pos, base])
-                g.hover(pos, text)
-                g.hover(tuple(p + c * L * 0.5 for p, c in zip(pos, d)), text)
-                if fmag >= label_min:
-                    g.label(tuple(t + c * 0.03 * length for t, c in zip(tip, d)), f"{fmag:.3g} k")
-            if mmag > 0.0:
-                text = f"<b>{mmag:.4g} kip-ft</b> ({m_names}, right-hand rule)<br>" + detail
-                axis = tuple(c / mmag for c in mvec)
-                u, w = _perp(axis)
-                radius = max(0.45 * length * mmag / mmax, 0.12 * length)
-                sweep = math.radians(270.0)
-                steps = 28
-                pts = []
-                for q in range(steps + 1):
-                    ang = sweep * q / steps
-                    pts.append(tuple(p + radius * (math.cos(ang) * cu + math.sin(ang) * cw)
-                                     for p, cu, cw in zip(pos, u, w)))
-                end = pts[-1]
-                tangent = tuple(-math.sin(sweep) * cu + math.cos(sweep) * cw for cu, cw in zip(u, w))
-                size = 0.45 * radius
-                tip = tuple(e + c * size * 0.5 for e, c in zip(end, tangent))
-                g.head(tip, tangent, size, text)
-                g.path(pts)
-                g.hover(pts[steps // 3], text)
-                g.hover(pts[2 * steps // 3], text)
-                if mmag >= label_min:
-                    out = tuple((e - p) / radius for e, p in zip(end, pos))
-                    g.label(tuple(e + c * 0.25 * radius for e, c in zip(end, out)), f"{mmag:.3g} k-ft")
+            for i in chosen:
+                value = vals[i]
+                if value == 0.0:
+                    continue
+                comp = _COMPONENTS[i]
+                axis = [0.0, 0.0, 0.0]
+                axis[i % 3] = 1.0 if value > 0 else -1.0
+                axis = tuple(axis)
+                if i < 3:
+                    note = " (+Fz is down)" if i == 2 else ""
+                    text = f"<b>{comp} = {value:.4g} kips</b>{note}<br>" + detail
+                    L = max(length * abs(value) / fmax, 0.03 * length)
+                    tip = tuple(p + c * L for p, c in zip(pos, axis))
+                    base = g.head(tip, axis, min(L, max(0.28 * L, 0.035 * length)), text)
+                    g.path([pos, base])
+                    g.hover(pos, text)
+                    g.hover(tuple(p + c * L * 0.5 for p, c in zip(pos, axis)), text)
+                    if abs(value) >= label_min:
+                        g.label(tuple(t + c * 0.03 * length for t, c in zip(tip, axis)), f"{comp} {value:.3g} k")
+                else:
+                    text = f"<b>{comp} = {value:.4g} kip-ft</b> (right-hand rule about {comp[1].upper()})<br>" + detail
+                    u, w = _perp(axis)
+                    radius = max(0.45 * length * abs(value) / mmax, 0.12 * length)
+                    sweep = math.radians(270.0)
+                    steps = 28
+                    pts = []
+                    for q in range(steps + 1):
+                        ang = sweep * q / steps
+                        pts.append(tuple(p + radius * (math.cos(ang) * cu + math.sin(ang) * cw)
+                                         for p, cu, cw in zip(pos, u, w)))
+                    end = pts[-1]
+                    tangent = tuple(-math.sin(sweep) * cu + math.cos(sweep) * cw for cu, cw in zip(u, w))
+                    size = 0.45 * radius
+                    g.head(tuple(e + c * size * 0.5 for e, c in zip(end, tangent)), tangent, size, text)
+                    g.path(pts)
+                    g.hover(pts[steps // 3], text)
+                    g.hover(pts[2 * steps // 3], text)
+                    if abs(value) >= label_min:
+                        out = tuple((e - p) / radius for e, p in zip(end, pos))
+                        g.label(tuple(e + c * 0.25 * radius for e, c in zip(end, out)), f"{comp} {value:.3g} k-ft")
         g.add_to(fig, name, color)
     return fig
 

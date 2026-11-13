@@ -393,8 +393,8 @@ class FbmpApp:
                         rows = [ch for ch in res.changes if ch.line.case == case.value]
                         moved = sum(1 for ch in rows if ch.mirrored)
                         print(f"Case {case.value} ({rows[0].line.type if rows else ''}): {len(rows)} load lines, {moved} mirrored. "
-                              "Straight arrows are forces, curved arrows are moments (right-hand rule); size is proportional "
-                          "to the magnitude. Hover an arrow for its values.")
+                              "Each component is its own arrow along its axis: straight = force, curved = moment "
+                          "(right-hand rule). +Fz is down. Size is proportional to the value; hover for all six.")
                     meta = fig.layout.meta
                     print(f"Showing {meta['nodes_shown']:,} of {meta['nodes_total']:,} nodes and {meta['elements_shown']:,} of "
                           f"{meta['elements_total']:,} elements, in feet. Click a legend entry to hide or show that group.")
