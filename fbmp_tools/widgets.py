@@ -94,7 +94,7 @@ class FbmpApp:
         print(f"{name_out}: {len(m.nodes)} nodes ({len(m.pile_heads)} piles, {len(m.cap_nodes)} cap nodes, "
               f"{len(m.group('pier'))} pier nodes, {len(m.group('bearingL', 'bearingR'))} bearing nodes), "
               f"{len(m.combos)} load combinations")
-        print(f"Pile cap X {x0 / FT:.2f} to {x1 / FT:.2f} ft, Y {y0 / FT:.2f} to {y1 / FT:.2f} ft; "
+        print(f"{'Pile cap' if m.cap_nodes else 'Structure (no pile cap)'} X {x0 / FT:.2f} to {x1 / FT:.2f} ft, Y {y0 / FT:.2f} to {y1 / FT:.2f} ft; "
               f"mirror planes X = {(x0 + x1) / 2 / FT:.3f} ft, Y = {(y0 + y1) / 2 / FT:.3f} ft")
         groups: Dict[str, int] = {}
         for n in m.nodes.values():
@@ -106,7 +106,7 @@ class FbmpApp:
               + ", ".join(f"{g} {c}" for g, c in groups.items())
               + "; elements: " + ", ".join(f"{k} {c}" for k, c in kinds.items())
               + (f", pile cap {len(m.cap_elements)}" if m.cap_elements else ""))
-        known = {"pile", "cap", "pier", "bearingL", "bearingR"}
+        known = {"pile", "cap", "pier", "bearingL", "bearingR", "Bent Cap"}
         if set(groups) - known:
             print("Note: node groups this tool has not been tried on: " + ", ".join(sorted(set(groups) - known))
                   + ". They are drawn and can be mirrored (nearest node of the same group), but check the result.")
@@ -170,6 +170,9 @@ class FbmpApp:
                 print(f"Mirror the loads first (step 2) so the {run_of} input is known.")
                 return
             infile = parse_in(self.results[key].text)
+        if not self.model.cap_elements:
+            print("This model has no pile cap (shell elements), so section cuts through a pile cap do not apply.")
+            return
         print(f"Reading results for {run_of} ...")
         results = read_results(source, self.model)
         capf = cuts.build_cap_forces(self.model, infile, results)

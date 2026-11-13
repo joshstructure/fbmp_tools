@@ -1,4 +1,4 @@
-﻿"""Plotly 3D views of an FB-MultiPier model, load arrows, section cuts, envelopes.
+"""Plotly 3D views of an FB-MultiPier model, load arrows, section cuts, envelopes.
 
 Coordinates are inches, forces kips, moments kip-ft.  FB-MultiPier's global Z
 points DOWN, so the z axis is reversed to show piles hanging below the cap.
@@ -134,7 +134,8 @@ def model_figure(model, show_pile_nodes: bool = True, max_pile_depth: Optional[f
         fig.add_trace(go.Scatter3d(x=x, y=y, z=z, mode="lines", name=name, legendgroup=name,
                                    line=dict(color=color, width=width), hoverinfo="skip"))
 
-    frame_style = {"pile": ("Piles", _PILE_COLOR, 4), "pier": ("Pier", _PIER_COLOR, 6)}
+    frame_style = {"pile": ("Piles", _PILE_COLOR, 4), "pier": ("Pier", _PIER_COLOR, 6),
+                   "bent cap": ("Bent cap", _PIER_COLOR, 7), "extra member": ("Extra members", "#b0672b", 5)}
     for kind, rec in kinds.items():
         name, color, width = frame_style.get(kind, (kind.capitalize(), "#7a5ea8", 4))
         line(name, rec["pairs"], color, width)
@@ -142,8 +143,9 @@ def model_figure(model, show_pile_nodes: bool = True, max_pile_depth: Optional[f
 
     # nodes: every node of the model, grouped for the legend
     styles = {"Pile cap nodes": ("#6b7178", 2.5), "Pile heads": ("#6b4f3a", 5), "Pier nodes": ("#2f3b4a", 4),
-              "Bearings": ("#2e9b57", 6), "Pile nodes": ("#a08a74", 2.5)}
-    names = {"cap": "Pile cap nodes", "pier": "Pier nodes", "bearingL": "Bearings", "bearingR": "Bearings"}
+              "Bearings": ("#2e9b57", 6), "Pile nodes": ("#a08a74", 2.5), "Bent cap nodes": ("#2f3b4a", 4)}
+    names = {"cap": "Pile cap nodes", "pier": "Pier nodes", "bearingL": "Bearings", "bearingR": "Bearings",
+             "Bent Cap": "Bent cap nodes"}
     buckets: Dict[str, List] = {}
     shown = 0
     for n in nodes.values():
@@ -180,15 +182,26 @@ def model_figure(model, show_pile_nodes: bool = True, max_pile_depth: Optional[f
             fig.add_trace(_mid_trace("Pile cap (element labels)", cap_mid, cap_txt, "#4d6fa8"))
     n_elem += sum(len(rec["pairs"]) for rec in kinds.values())
 
+    pts_all = [xyz(n) for lst in buckets.values() for n in lst] or [(0.0, 0.0, 0.0)]
+    lo = [min(p[i] for p in pts_all) for i in range(3)]
+    hi = [max(p[i] for p in pts_all) for i in range(3)]
+    big = max(max(h - l for h, l in zip(hi, lo)), 1e-6)
+    pad = 0.08 * big                     # room for load arrows and labels
+    spans = [h - l + 2 * pad for h, l in zip(hi, lo)]
+    big = max(spans)
     x0, x1, y0, y1 = model.cap_extents()
     heading = title or getattr(model, "title", "") or None
     fig.update_layout(
         title=heading, height=height, width=fig_width, autosize=fig_width is None, margin=dict(l=0, r=0, t=40 if heading else 10, b=0),
         uirevision="model",
         scene=dict(
-            aspectmode="data",
-            xaxis=dict(title=f"X ({unit})"), yaxis=dict(title=f"Y ({unit})"),
-            zaxis=dict(title=f"Z ({unit}, down)", autorange="reversed"),
+            # true proportions, scaled so the longest side of the model fills the view
+            # (aspectmode "data" leaves the camera inside a tall, slender model)
+            aspectmode="manual", aspectratio=dict(x=1.7 * spans[0] / big, y=1.7 * spans[1] / big, z=1.7 * spans[2] / big),
+            xaxis=dict(title=f"X ({unit})", range=[lo[0] - pad, hi[0] + pad]),
+            yaxis=dict(title=f"Y ({unit})", range=[lo[1] - pad, hi[1] + pad]),
+            zaxis=dict(title=f"Z ({unit}, down)", range=[hi[2] + pad, lo[2] - pad]),
+            camera=dict(eye=dict(x=-1.1, y=-1.5, z=0.7)),
         ),
         legend=dict(itemsizing="constant"),
         meta={"span": float(max(x1 - x0, y1 - y0, 1.0)) * k, "cap_z": float(cap_z) * k, "scale": k, "unit": unit,

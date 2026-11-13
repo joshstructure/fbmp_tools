@@ -81,6 +81,7 @@ class OutModel:
         return [n for n in self.nodes.values() if n.pile_head]
 
     def cap_extents(self) -> Tuple[float, float, float, float]:
+        """Plan extents of the pile cap; without one (pile bent), of the whole structure."""
         pts = self.cap_nodes or list(self.nodes.values())
         xs = [n.x for n in pts]
         ys = [n.y for n in pts]
@@ -92,7 +93,7 @@ class OutModel:
 
     @property
     def cap_z(self) -> float:
-        pts = self.cap_nodes
+        pts = self.cap_nodes or self.pile_heads      # a pile bent has no pile cap: use the pile tops
         return pts[0].z if pts else 0.0
 
 
@@ -155,7 +156,7 @@ def read_model(source: Source) -> OutModel:
             m = re.search(r"SUBSTRUCTURE #\s*(\d+)", line)
             if m:
                 model.substructures = max(model.substructures, int(m.group(1)))
-        m = re.match(r"\s*Type of Structure\s*=\s*(.+?)\s*$", line)
+        m = re.match(r"\s*(?:Type of Structure|Structure Type)\s*=\s*(.+?)\s*$", line)
         if m:
             model.structure_type = m.group(1)
 
@@ -200,7 +201,7 @@ def read_model(source: Source) -> OutModel:
                 model.cap_unit_weight_pcf = float(m.group(1))
         elif section.endswith("CONNECTIVITY") and not section.startswith("PILE CAP"):
             parts = line.split()
-            if len(parts) == 4 and all(p.isdigit() for p in parts):
+            if len(parts) >= 4 and all(p.isdigit() for p in parts[:4]):   # extra members add an end-fixity column
                 if section.startswith("PILE"):
                     kind = "pile"
                 elif section.startswith("COLUMN"):
