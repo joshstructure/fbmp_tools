@@ -186,10 +186,15 @@ def read_model(source: Source) -> OutModel:
             m = re.search(r"Unit Weight\s*=\s*(" + _NUM + ")", line)
             if m:
                 model.cap_unit_weight_pcf = float(m.group(1))
-        elif section in ("COLUMN AND PIER CAP CONNECTIVITY", "PILE ELEMENT CONNECTIVITY"):
+        elif section.endswith("CONNECTIVITY") and not section.startswith("PILE CAP"):
             parts = line.split()
             if len(parts) == 4 and all(p.isdigit() for p in parts):
-                kind = "pile" if section.startswith("PILE") else "pier"
+                if section.startswith("PILE"):
+                    kind = "pile"
+                elif section.startswith("COLUMN"):
+                    kind = "pier"
+                else:
+                    kind = section.replace("CONNECTIVITY", "").replace("ELEMENT", "").strip().lower() or "frame"
                 model.frame_elements.append(FrameElement(int(parts[0]), int(parts[1]), int(parts[2]), int(parts[3]), kind))
         elif section == "PILE CAP ELEMENT CONNECTIVITY":
             parts = line.split()

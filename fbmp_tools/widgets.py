@@ -25,7 +25,8 @@ from .outfile import OutModel, read_model, read_results
 
 _LEVEL_COLOR = {"ok": "#c9efc9", "check": "#fff3a6", "problem": "#f6b4b4", "na": "#eeeeee"}
 _WIDE = W.Layout(width="100%")
-_STYLE = {"description_width": "150px"}
+_STYLE = {"description_width": "170px"}
+FT = 12.0     # model length units (inches) per foot; everything on screen is in feet
 
 
 def _uploaded(widget) -> Optional[tuple]:
@@ -103,8 +104,8 @@ class FbmpApp:
         print(f"{name_out}: {len(m.nodes)} nodes ({len(m.pile_heads)} piles, {len(m.cap_nodes)} cap nodes, "
               f"{len(m.group('pier'))} pier nodes, {len(m.group('bearingL', 'bearingR'))} bearing nodes), "
               f"{len(m.combos)} load combinations")
-        print(f"Pile cap X {x0:.1f} to {x1:.1f}, Y {y0:.1f} to {y1:.1f}; "
-              f"mirror planes X = {(x0 + x1) / 2:.2f}, Y = {(y0 + y1) / 2:.2f}")
+        print(f"Pile cap X {x0 / FT:.2f} to {x1 / FT:.2f} ft, Y {y0 / FT:.2f} to {y1 / FT:.2f} ft; "
+              f"mirror planes X = {(x0 + x1) / 2 / FT:.3f} ft, Y = {(y0 + y1) / 2 / FT:.3f} ft")
         if self.infile.unparsed:
             print(f"WARNING: {len(self.infile.unparsed)} line(s) in LOAD / LOADBP were not understood "
                   f"(first: line {self.infile.unparsed[0] + 1}); they will be copied unchanged.")
@@ -235,9 +236,9 @@ class FbmpApp:
         fam_box = W.VBox()
         case_sel = W.SelectMultiple(rows=10, layout=W.Layout(width="320px"), description="Cases")
         dirs = [W.Checkbox(value=True, description=f"Mirror {d}", indent=False, layout=W.Layout(width="110px")) for d in DIRECTIONS]
-        cx = W.Text(description="Mirror plane X", placeholder="cap centerline", style=_STYLE)
-        cy = W.Text(description="Mirror plane Y", placeholder="cap centerline", style=_STYLE)
-        tol = W.FloatText(value=24.0, description="Node match tolerance", style=_STYLE)
+        cx = W.Text(description="Mirror plane X (ft)", placeholder="cap centerline", style=_STYLE)
+        cy = W.Text(description="Mirror plane Y (ft)", placeholder="cap centerline", style=_STYLE)
+        tol = W.FloatText(value=2.0, description="Node match tolerance (ft)", style=_STYLE)
         go = W.Button(description="Mirror loads", button_style="primary")
         out = W.Output()
         fam_checks: Dict[str, W.Checkbox] = {}
@@ -273,7 +274,7 @@ class FbmpApp:
                     print("Read the base files first (step 1).")
                     return
                 try:
-                    center = (float(cx.value) if cx.value.strip() else None, float(cy.value) if cy.value.strip() else None)
+                    center = (float(cx.value) * FT if cx.value.strip() else None, float(cy.value) * FT if cy.value.strip() else None)
                     selected = set(case_sel.value)
                     os.makedirs(self.output_dir, exist_ok=True)
                     self.results.clear()
@@ -282,7 +283,7 @@ class FbmpApp:
                     for d, cb in zip(DIRECTIONS, dirs):
                         if not cb.value:
                             continue
-                        res = mirror_loads(self.infile, self.model, d, selected, center, tol.value)
+                        res = mirror_loads(self.infile, self.model, d, selected, center, tol.value * FT)
                         self.results[d] = res
                         stem = os.path.join(self.output_dir, f"{self.base_name}_Mirror{d}")
                         with open(stem + ".in", "w", encoding="latin-1", newline="") as fh:
@@ -330,8 +331,8 @@ class FbmpApp:
         case = W.Dropdown(description="Load case", options=[], style=_STYLE)
         before = W.Checkbox(value=True, description="Before (blue)", indent=False)
         after = W.Checkbox(value=True, description="After (red)", indent=False)
-        pile_nodes = W.Checkbox(value=False, description="Pile nodes", indent=False)
-        depth = W.FloatText(value=300.0, description="Show piles to depth", style=_STYLE)
+        pile_nodes = W.Checkbox(value=True, description="Pile nodes and elements", indent=False)
+        depth = W.FloatText(value=0.0, description="Pile depth shown (ft, 0 = all)", style=_STYLE)
         go = W.Button(description="Draw", button_style="primary")
         out = W.Output()
 
@@ -354,7 +355,7 @@ class FbmpApp:
                     print("Read the base files first (step 1).")
                     return
                 fig = viz.model_figure(self.model, show_pile_nodes=pile_nodes.value,
-                                       max_pile_depth=depth.value or None, title=self.base_name)
+                                       max_pile_depth=(depth.value * FT) or None, title=self.base_name)
                 res = self.results.get(direction.value)
                 if res is None and self.infile is not None:      # nothing mirrored yet: show the base loads
                     res = mirror_loads(self.infile, self.model, "X", set())
@@ -365,6 +366,9 @@ class FbmpApp:
                     moved = sum(1 for ch in rows if ch.mirrored)
                     print(f"Case {case.value} ({rows[0].line.type if rows else ''}): {len(rows)} load lines, {moved} mirrored. "
                           "Hover a node, element or arrow tail for its numbers.")
+                meta = fig.layout.meta
+                print(f"Showing {meta['nodes_shown']:,} of {meta['nodes_total']:,} nodes and {meta['elements_shown']:,} of "
+                      f"{meta['elements_total']:,} elements, in feet. Click a legend entry to hide or show that group.")
                 fig.show()
 
         go.on_click(run)
@@ -383,10 +387,10 @@ class FbmpApp:
         add = W.Button(description="Read results")
         sets_label = W.HTML()
         mode = W.ToggleButtons(options=[("Cut at X =", "x"), ("Cut at Y =", "y"), ("Between two nodes", "nodes")])
-        pos = W.FloatText(description="Coordinate", style=_STYLE)
+        pos = W.FloatText(description="Coordinate (ft)", style=_STYLE)
         node_a = W.IntText(description="Node A", style=_STYLE)
         node_b = W.IntText(description="Node B", style=_STYLE)
-        tol = W.FloatText(value=1.0, description="Node pick tolerance", style=_STYLE)
+        tol = W.FloatText(value=0.1, description="Node pick tolerance (ft)", style=_STYLE)
         go = W.Button(description="Cut", button_style="primary")
         log = W.Output()
         out = W.Output()
@@ -395,7 +399,7 @@ class FbmpApp:
             run_of.options = ["Base"] + [f"Mirror {d}" for d in self.results]
             sets_label.value = "Results loaded: " + (", ".join(self.cap_sets) or "none yet")
             if self.model is not None and pos.value == 0:
-                pos.value = round(self.model.mirror_center()[0], 2)
+                pos.value = round(self.model.mirror_center()[0] / FT, 3)
 
         def read(_):
             log.clear_output()
@@ -419,18 +423,18 @@ class FbmpApp:
                 x0, x1, y0, y1 = m.cap_extents()
                 try:
                     if mode.value == "x":
-                        p0, p1, sweep_axis = (pos.value, y0), (pos.value, y1), "x"
+                        p0, p1, sweep_axis = (pos.value * FT, y0), (pos.value * FT, y1), "x"
                     elif mode.value == "y":
-                        p0, p1, sweep_axis = (x0, pos.value), (x1, pos.value), "y"
+                        p0, p1, sweep_axis = (x0, pos.value * FT), (x1, pos.value * FT), "y"
                     else:
                         a, b = m.nodes[node_a.value], m.nodes[node_b.value]
                         p0, p1, sweep_axis = (a.x, a.y), (b.x, b.y), None
                 except KeyError as exc:
                     print(f"Node {exc} is not in the model.")
                     return
-                on = cuts.nodes_on_line(m, p0, p1, tol.value)
+                on = cuts.nodes_on_line(m, p0, p1, tol.value * FT)
                 els = cuts.elements_on_line(m, p0, p1)
-                print(f"Cut from ({p0[0]:.2f}, {p0[1]:.2f}) to ({p1[0]:.2f}, {p1[1]:.2f}): "
+                print(f"Cut from ({p0[0] / FT:.3f}, {p0[1] / FT:.3f}) to ({p1[0] / FT:.3f}, {p1[1] / FT:.3f}) ft: "
                       f"{len(on)} pile cap nodes on the line, {len(els)} cap elements crossed.")
                 rows = []
                 per_combo = None
@@ -470,21 +474,21 @@ class FbmpApp:
                     for name, capf in self.cap_sets.items():
                         env = cuts.sweep(capf, sweep_axis, stations)
                         viz.envelope_figure(
-                            list(stations), {"Max": list(env["Max moment"]), "Min": list(env["Min moment"])},
+                            list(stations / FT), {"Max": list(env["Max moment"]), "Min": list(env["Min moment"])},
                             f"Max / min moment for cuts along {sweep_axis.upper()}, all combinations ({name})",
-                            "Moment (kip-ft)", x_title=f"Cut position, {sweep_axis.upper()} (in)").show()
+                            "Moment (kip-ft)", x_title=f"Cut position, {sweep_axis.upper()} (ft)").show()
                         viz.envelope_figure(
-                            list(stations), {"Max shear": list(env["Max shear"])},
+                            list(stations / FT), {"Max shear": list(env["Max shear"])},
                             f"Max shear for cuts along {sweep_axis.upper()}, all combinations ({name})",
-                            "Shear (kips)", x_title=f"Cut position, {sweep_axis.upper()} (in)").show()
-                fig = viz.model_figure(m, max_pile_depth=120.0, title="Section cut", height=520)
+                            "Shear (kips)", x_title=f"Cut position, {sweep_axis.upper()} (ft)").show()
+                fig = viz.model_figure(m, show_pile_nodes=False, max_pile_depth=120.0, title="Section cut", height=520, show_elements=False)
                 viz.add_cut(fig, p0, p1, m.cap_z, [(n.x, n.y, n.z) for _, n in on])
                 fig.show()
-                table = "".join(f"<tr><td style='padding:1px 10px'>{n.id}</td><td style='padding:1px 10px;text-align:right'>{s:.2f}</td>"
-                                f"<td style='padding:1px 10px;text-align:right'>{n.x:.2f}</td><td style='padding:1px 10px;text-align:right'>{n.y:.2f}</td>"
+                table = "".join(f"<tr><td style='padding:1px 10px'>{n.id}</td><td style='padding:1px 10px;text-align:right'>{s / FT:.3f}</td>"
+                                f"<td style='padding:1px 10px;text-align:right'>{n.x / FT:.3f}</td><td style='padding:1px 10px;text-align:right'>{n.y / FT:.3f}</td>"
                                 f"<td style='padding:1px 10px'>{'pile ' + str(n.pile) if n.pile_head else ''}</td></tr>" for s, n in on)
                 display(HTML("<details><summary>Nodes on the cut line (%d) and elements crossed (%d)</summary>"
-                             "<table style='font-size:12px'><tr><th>Node</th><th>Station</th><th>X</th><th>Y</th><th></th></tr>%s</table>"
+                             "<table style='font-size:12px'><tr><th>Node</th><th>Station (ft)</th><th>X (ft)</th><th>Y (ft)</th><th></th></tr>%s</table>"
                              "<div style='font-size:12px'>Elements: %s</div></details>"
                              % (len(on), len(els), table, ", ".join(str(e.id) for e in els))))
 

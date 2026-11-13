@@ -1,4 +1,4 @@
-"""Plotly 3D views of an FB-MultiPier model, load arrows, section cuts, envelopes.
+﻿"""Plotly 3D views of an FB-MultiPier model, load arrows, section cuts, envelopes.
 
 Coordinates are inches, forces kips, moments kip-ft.  FB-MultiPier's global Z
 points DOWN, so the z axis is reversed to show piles hanging below the cap.
@@ -58,123 +58,148 @@ def _node_text(n) -> str:
 def _mid_trace(name: str, mids, texts, color: str) -> go.Scatter3d:
     return go.Scatter3d(
         x=[m[0] for m in mids], y=[m[1] for m in mids], z=[m[2] for m in mids],
-        mode="markers", name=name, legendgroup=name, visible="legendonly",
-        marker=dict(size=2.5, color=color, opacity=0.15),
+        mode="markers", name=name, legendgroup=name,
+        marker=dict(size=3, color=color, opacity=0.35, symbol="square"),
         text=texts, hovertemplate="%{text}<extra></extra>",
     )
 
 
-def model_figure(model, show_pile_nodes: bool = False, max_pile_depth: Optional[float] = None,
-                 title: Optional[str] = None, height: int = 720) -> go.Figure:
-    """Build the 3D view of the structural model (piles, pier, cap mesh, nodes)."""
+def model_figure(model, show_pile_nodes: bool = True, max_pile_depth: Optional[float] = None,
+                 title: Optional[str] = None, height: int = 760, scale: float = 1.0 / 12.0,
+                 unit: str = "ft", show_elements: bool = True) -> go.Figure:
+    """3D view of the whole model: every node and every element, with hover labels.
+
+    Coordinates are multiplied by ``scale`` for display (default: inches to feet).
+    ``max_pile_depth`` (model units below the pile cap) hides the lower part of long piles.
+    """
     nodes = model.nodes
     cap_z = model.cap_z
     z_limit = None if max_pile_depth is None else cap_z + max_pile_depth
+    k = scale
 
-    def keep(nid: int) -> bool:
-        n = nodes.get(nid)
-        if n is None:
-            return False
-        return not (z_limit is not None and n.group == "pile" and n.z > z_limit)
+    def xyz(n):
+        return (n.x * k, n.y * k, n.z * k)
 
-    pile_pairs, pier_pairs = [], []
-    pile_mid, pile_txt, pier_mid, pier_txt = [], [], [], []
+    def hidden(n) -> bool:
+        return z_limit is not None and n.group == "pile" and n.z > z_limit
+
+    def node_text(n) -> str:
+        parts = [f"Node {n.id}", _GROUP_WORDS.get(n.group, n.group)]
+        if n.pile:
+            parts.append(f"pile {n.pile}" + (" (head)" if n.pile_head else ""))
+        parts.append(f"x, y, z = {n.x * k:.3f}, {n.y * k:.3f}, {n.z * k:.3f} {unit}")
+        if not n.active:
+            parts.append("inactive")
+        return "<br>".join(parts)
+
+    # frame elements, one line trace and one hover trace per kind
+    kinds: Dict[str, Dict[str, list]] = {}
     for el in model.frame_elements:
         a, b = nodes.get(el.i), nodes.get(el.j)
-        if a is None or b is None:
+        if a is None or b is None or hidden(a) or hidden(b):
             continue
-        if el.kind == "pile" and z_limit is not None and (a.z > z_limit or b.z > z_limit):
-            continue
-        pa, pb = (a.x, a.y, a.z), (b.x, b.y, b.z)
-        mid = ((a.x + b.x) / 2, (a.y + b.y) / 2, (a.z + b.z) / 2)
-        txt = f"Element {el.id}<br>{el.kind} element<br>nodes {el.i}-{el.j}<br>section {el.section}"
-        if el.kind == "pile":
-            pile_pairs.append((pa, pb))
-            if show_pile_nodes:
-                pile_mid.append(mid)
-                pile_txt.append(txt)
-        else:
-            pier_pairs.append((pa, pb))
-            pier_mid.append(mid)
-            pier_txt.append(txt)
+        rec = kinds.setdefault(el.kind, {"pairs": [], "mid": [], "txt": []})
+        pa, pb = xyz(a), xyz(b)
+        rec["pairs"].append((pa, pb))
+        rec["mid"].append(tuple((p + q) / 2 for p, q in zip(pa, pb)))
+        length = math.dist(pa, pb)
+        rec["txt"].append(f"Element {el.id}<br>{el.kind} element<br>nodes {el.i} - {el.j}"
+                          f"<br>section {el.section}<br>length {length:.3f} {unit}")
 
-    cap_edges: Dict[Tuple[int, int], Tuple[int, int]] = {}
+    # pile cap shell elements: every edge of the 3 x 3 node grid, drawn once
+    cap_edges: Dict[Tuple[int, int], None] = {}
     cap_mid, cap_txt = [], []
+    grid_edges = ((0, 1), (1, 2), (3, 4), (4, 5), (6, 7), (7, 8), (0, 3), (3, 6), (1, 4), (4, 7), (2, 5), (5, 8))
+    outline = ((0, 2), (2, 8), (8, 6), (6, 0))
     for ce in model.cap_elements:
         ids = ce.nodes
-        if len(ids) < 9:
+        if any(i not in nodes for i in ids):
             continue
-        corners = (ids[0], ids[2], ids[8], ids[6])
-        pts = [nodes.get(c) for c in corners]
-        if any(p is None for p in pts):
-            continue
-        for k in range(4):
-            a, b = corners[k], corners[(k + 1) % 4]
-            cap_edges.setdefault((a, b) if a < b else (b, a), (a, b))
-        cap_mid.append((sum(p.x for p in pts) / 4, sum(p.y for p in pts) / 4, sum(p.z for p in pts) / 4))
-        cap_txt.append(f"Element {ce.id}<br>cap shell element<br>nodes {', '.join(str(i) for i in ids)}"
+        for p, q in (grid_edges if len(ids) == 9 else outline):
+            e = (ids[p], ids[q]) if ids[p] < ids[q] else (ids[q], ids[p])
+            cap_edges.setdefault(e)
+        pts = [xyz(nodes[i]) for i in ids]
+        cap_mid.append(tuple(sum(c) / len(pts) for c in zip(*pts)))
+        cap_txt.append(f"Element {ce.id}<br>pile cap shell element<br>nodes {', '.join(str(i) for i in ids)}"
                        f"<br>thickness {ce.thick:.3f} ft (self weight {ce.thick_sw:.3f} ft)")
-    cap_pairs = [((nodes[a].x, nodes[a].y, nodes[a].z), (nodes[b].x, nodes[b].y, nodes[b].z))
-                 for a, b in cap_edges.values()]
+    cap_pairs = [(xyz(nodes[a]), xyz(nodes[b])) for a, b in cap_edges]
 
     fig = go.Figure()
 
     def line(name, pairs, color, width):
+        if not pairs:
+            return
         x, y, z = _segments(pairs)
         fig.add_trace(go.Scatter3d(x=x, y=y, z=z, mode="lines", name=name, legendgroup=name,
                                    line=dict(color=color, width=width), hoverinfo="skip"))
 
-    line("Piles", pile_pairs, _PILE_COLOR, 4)
-    line("Pier", pier_pairs, _PIER_COLOR, 6)
-    line("Pile cap mesh", cap_pairs, _CAP_COLOR, 1.5)
+    frame_style = {"pile": ("Piles", _PILE_COLOR, 4), "pier": ("Pier", _PIER_COLOR, 6)}
+    for kind, rec in kinds.items():
+        name, color, width = frame_style.get(kind, (kind.capitalize(), "#7a5ea8", 4))
+        line(name, rec["pairs"], color, width)
+    line("Pile cap elements", cap_pairs, _CAP_COLOR, 1.5)
 
-    # node markers grouped by trace name
-    buckets: Dict[str, List] = {"Cap nodes": [], "Pile heads": [], "Pier nodes": [], "Bearings": [], "Pile nodes": []}
-    styles = {"Cap nodes": ("#6b7178", 2.5), "Pile heads": ("#6b4f3a", 5), "Pier nodes": ("#2f3b4a", 4),
+    # nodes: every node of the model, grouped for the legend
+    styles = {"Pile cap nodes": ("#6b7178", 2.5), "Pile heads": ("#6b4f3a", 5), "Pier nodes": ("#2f3b4a", 4),
               "Bearings": ("#2e9b57", 6), "Pile nodes": ("#a08a74", 2.5)}
+    names = {"cap": "Pile cap nodes", "pier": "Pier nodes", "bearingL": "Bearings", "bearingR": "Bearings"}
+    buckets: Dict[str, List] = {}
+    shown = 0
     for n in nodes.values():
-        if not keep(n.id):
+        if hidden(n):
             continue
         if n.group == "pile":
             if n.pile_head:
-                buckets["Pile heads"].append(n)
+                name = "Pile heads"
             elif show_pile_nodes:
-                buckets["Pile nodes"].append(n)
-        elif n.group in _GROUP_STYLE:
-            buckets[_GROUP_STYLE[n.group][0]].append(n)
+                name = "Pile nodes"
+            else:
+                continue
+        else:
+            name = names.get(n.group, f"{n.group} nodes")
+        buckets.setdefault(name, []).append(n)
+        shown += 1
     for name, lst in buckets.items():
-        if not lst or (name == "Pile nodes" and not show_pile_nodes):
-            continue
-        color, size = styles[name]
+        color, size = styles.get(name, ("#7a5ea8", 4))
+        pts = [xyz(n) for n in lst]
         fig.add_trace(go.Scatter3d(
-            x=[n.x for n in lst], y=[n.y for n in lst], z=[n.z for n in lst],
-            mode="markers", name=name, legendgroup=name,
-            marker=dict(size=size, color=color),
-            text=[_node_text(n) for n in lst], hovertemplate="%{text}<extra></extra>",
-            visible=True,
-        ))
+            x=[p[0] for p in pts], y=[p[1] for p in pts], z=[p[2] for p in pts],
+            mode="markers", name=name, legendgroup=name, marker=dict(size=size, color=color),
+            text=[node_text(n) for n in lst], hovertemplate="%{text}<extra></extra>"))
 
-    if pier_mid:
-        fig.add_trace(_mid_trace("Pier elements", pier_mid, pier_txt, _PIER_COLOR))
-    if pile_mid:
-        fig.add_trace(_mid_trace("Pile elements", pile_mid, pile_txt, _PILE_COLOR))
-    if cap_mid:
-        fig.add_trace(_mid_trace("Cap elements", cap_mid, cap_txt, _CAP_COLOR))
+    # element hover points (at mid length / at the element center)
+    n_elem = len(cap_mid)
+    if show_elements:
+        for kind, rec in kinds.items():
+            if kind == "pile" and not show_pile_nodes:
+                continue
+            name, color, _ = frame_style.get(kind, (kind.capitalize(), "#7a5ea8", 4))
+            fig.add_trace(_mid_trace(name + " (element labels)", rec["mid"], rec["txt"], color))
+        if cap_mid:
+            fig.add_trace(_mid_trace("Pile cap (element labels)", cap_mid, cap_txt, "#4d6fa8"))
+    n_elem += sum(len(rec["pairs"]) for rec in kinds.values())
 
     x0, x1, y0, y1 = model.cap_extents()
+    heading = title or getattr(model, "title", "") or None
     fig.update_layout(
-        title=title or getattr(model, "title", "") or None,
-        height=height, margin=dict(l=0, r=0, t=40 if (title or getattr(model, "title", "")) else 10, b=0),
+        title=heading, height=height, margin=dict(l=0, r=0, t=40 if heading else 10, b=0),
         uirevision="model",
         scene=dict(
             aspectmode="data",
-            xaxis=dict(title="X (in)"), yaxis=dict(title="Y (in)"),
-            zaxis=dict(title="Z (in, down)", autorange="reversed"),
+            xaxis=dict(title=f"X ({unit})"), yaxis=dict(title=f"Y ({unit})"),
+            zaxis=dict(title=f"Z ({unit}, down)", autorange="reversed"),
         ),
         legend=dict(itemsizing="constant"),
-        meta={"span": float(max(x1 - x0, y1 - y0, 1.0)), "cap_z": float(cap_z)},
+        meta={"span": float(max(x1 - x0, y1 - y0, 1.0)) * k, "cap_z": float(cap_z) * k, "scale": k, "unit": unit,
+              "nodes_shown": shown, "nodes_total": len(nodes), "elements_shown": n_elem,
+              "elements_total": len(model.frame_elements) + len(model.cap_elements)},
     )
     return fig
+
+
+def _scale(fig: go.Figure) -> float:
+    meta = fig.layout.meta
+    return float(meta.get("scale", 1.0)) if isinstance(meta, dict) else 1.0
 
 
 def _span(fig: go.Figure) -> float:
@@ -200,6 +225,7 @@ def add_loads(fig: go.Figure, changes, case: int, show_before: bool = True, show
               label_min: float = 0.0) -> go.Figure:
     """Draw load arrows (before = blue, after = red) for one load case; returns fig."""
     _drop(fig, "load")
+    k_scale = _scale(fig)
     idx = [_COMPONENTS.index(c) for c in components if c in _COMPONENTS]
     if length is None:
         length = 0.12 * _span(fig)
@@ -215,6 +241,7 @@ def add_loads(fig: go.Figure, changes, case: int, show_before: bool = True, show
             pos = ch.new_pos if after else ch.pos
             if pos is None:
                 continue
+            pos = tuple(c * k_scale for c in pos)
             vals = ch.after if after else ch.before
             vec = [0.0, 0.0, 0.0]
             for c in idx:
@@ -282,6 +309,12 @@ def add_cut(fig: go.Figure, p0: Sequence[float], p1: Sequence[float], z: float,
             name: str = "Section cut") -> go.Figure:
     """Draw a section-cut line at elevation z, with optional highlighted nodes."""
     _drop(fig, "cut")
+    k_scale = _scale(fig)
+    p0 = (p0[0] * k_scale, p0[1] * k_scale)
+    p1 = (p1[0] * k_scale, p1[1] * k_scale)
+    z = z * k_scale
+    if node_xyz:
+        node_xyz = [tuple(c * k_scale for c in p) for p in node_xyz]
     fig.add_trace(go.Scatter3d(
         x=[p0[0], p1[0]], y=[p0[1], p1[1]], z=[z, z], mode="lines", name=name, meta="cut",
         line=dict(color=CUT_COLOR, width=8), hoverinfo="name"))
@@ -295,7 +328,7 @@ def add_cut(fig: go.Figure, p0: Sequence[float], p1: Sequence[float], z: float,
 
 
 def envelope_figure(stations: Sequence[float], series: Dict[str, Sequence[float]], title: str,
-                    y_title: str, x_title: str = "Distance along cut (in)", height: int = 380) -> go.Figure:
+                    y_title: str, x_title: str = "Distance along cut (ft)", height: int = 380) -> go.Figure:
     """2D max/min (or any named series) plot along a section cut."""
     fig = go.Figure()
     colors = {"Max": AFTER_COLOR, "Min": BEFORE_COLOR}

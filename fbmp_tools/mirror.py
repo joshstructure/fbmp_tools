@@ -442,7 +442,7 @@ def build_audit(infile: InFile, changes: Sequence[LoadChange], selected: Set[int
             partial = "" if n_sel == len(cases) else f" ({n_sel} of {len(cases)} cases)"
             same = _same_loads(before, after)
             if same is not None:
-                near = f" (within {same:.1f})" if same > 0.05 else ""
+                near = f" (within {same:.1f} in)" if same > 0.05 else ""
                 if flip[k]:
                     status[comp] = f"symmetric: mirror image equals the original{near}{partial}"
                     level[comp] = "check"
