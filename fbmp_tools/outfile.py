@@ -65,6 +65,8 @@ class OutModel:
     case_names: List[str] = field(default_factory=list)             # combination matrix columns
     combos: Dict[int, Dict[str, float]] = field(default_factory=dict)  # combo -> {case name: factor}
     title: str = ""
+    structure_type: str = ""
+    substructures: int = 1
 
     # -- convenience -----------------------------------------------------
     def group(self, *names: str) -> List[Node]:
@@ -149,6 +151,16 @@ def read_model(source: Source) -> OutModel:
             m = re.search(r"Number of Grid Points in Yp direction.*=\s*(\d+)", line)
             if m:
                 model.npy = int(m.group(1))
+        if "SUBSTRUCTURE #" in line:
+            m = re.search(r"SUBSTRUCTURE #\s*(\d+)", line)
+            if m:
+                model.substructures = max(model.substructures, int(m.group(1)))
+        m = re.match(r"\s*Type of Structure\s*=\s*(.+?)\s*$", line)
+        if m:
+            model.structure_type = m.group(1)
+
+        if section == "PROJECT DATA":
+            pass
         elif section == "COLUMN AND PIER CAP DATA":
             m = re.search(r"Number of Bearing Locations Specified\s*=\s*(\d+)", line)
             if m:

@@ -66,7 +66,7 @@ def _mid_trace(name: str, mids, texts, color: str) -> go.Scatter3d:
 
 def model_figure(model, show_pile_nodes: bool = True, max_pile_depth: Optional[float] = None,
                  title: Optional[str] = None, height: int = 760, scale: float = 1.0 / 12.0,
-                 unit: str = "ft", show_elements: bool = True) -> go.Figure:
+                 unit: str = "ft", show_elements: bool = True, width: Optional[int] = None) -> go.Figure:
     """3D view of the whole model: every node and every element, with hover labels.
 
     Coordinates are multiplied by ``scale`` for display (default: inches to feet).
@@ -76,6 +76,7 @@ def model_figure(model, show_pile_nodes: bool = True, max_pile_depth: Optional[f
     cap_z = model.cap_z
     z_limit = None if max_pile_depth is None else cap_z + max_pile_depth
     k = scale
+    fig_width = width
 
     def xyz(n):
         return (n.x * k, n.y * k, n.z * k)
@@ -182,7 +183,7 @@ def model_figure(model, show_pile_nodes: bool = True, max_pile_depth: Optional[f
     x0, x1, y0, y1 = model.cap_extents()
     heading = title or getattr(model, "title", "") or None
     fig.update_layout(
-        title=heading, height=height, margin=dict(l=0, r=0, t=40 if heading else 10, b=0),
+        title=heading, height=height, width=fig_width, autosize=fig_width is None, margin=dict(l=0, r=0, t=40 if heading else 10, b=0),
         uirevision="model",
         scene=dict(
             aspectmode="data",
@@ -220,16 +221,109 @@ def _drop(fig: go.Figure, tag: str) -> None:
     fig.data = tuple(t for t in fig.data if t.meta != tag)
 
 
+def _perp(d):
+    """Two unit vectors perpendicular to the unit vector d."""
+    ref = (0.0, 0.0, 1.0) if abs(d[2]) < 0.9 else (1.0, 0.0, 0.0)
+    u = (d[1] * ref[2] - d[2] * ref[1], d[2] * ref[0] - d[0] * ref[2], d[0] * ref[1] - d[1] * ref[0])
+    n = math.sqrt(sum(c * c for c in u))
+    u = tuple(c / n for c in u)
+    w = (d[1] * u[2] - d[2] * u[1], d[2] * u[0] - d[0] * u[2], d[0] * u[1] - d[1] * u[0])
+    return u, w
+
+
+class _Glyphs:
+    """Collects the geometry of one colour of arrows: shafts, heads, hover points, labels."""
+
+    RING = 10
+
+    def __init__(self):
+        self.sx, self.sy, self.sz = [], [], []
+        self.mx, self.my, self.mz, self.mi, self.mj, self.mk, self.mt = [], [], [], [], [], [], []
+        self.hx, self.hy, self.hz, self.ht = [], [], [], []
+        self.tx, self.ty, self.tz, self.tt = [], [], [], []
+
+    def path(self, pts):
+        for p in pts:
+            self.sx.append(p[0]); self.sy.append(p[1]); self.sz.append(p[2])
+        self.sx.append(None); self.sy.append(None); self.sz.append(None)
+
+    def head(self, tip, d, size, text):
+        """Cone with its point at tip, pointing along the unit vector d."""
+        base = tuple(t - c * size for t, c in zip(tip, d))
+        u, w = _perp(d)
+        r = 0.32 * size
+        first = len(self.mx)
+        self.mx.append(tip[0]); self.my.append(tip[1]); self.mz.append(tip[2])
+        for q in range(self.RING):
+            ang = 2 * math.pi * q / self.RING
+            cu, cw = r * math.cos(ang), r * math.sin(ang)
+            self.mx.append(base[0] + cu * u[0] + cw * w[0])
+            self.my.append(base[1] + cu * u[1] + cw * w[1])
+            self.mz.append(base[2] + cu * u[2] + cw * w[2])
+        self.mx.append(base[0]); self.my.append(base[1]); self.mz.append(base[2])
+        center = first + self.RING + 1
+        for q in range(self.RING):
+            p1, p2 = first + 1 + q, first + 1 + (q + 1) % self.RING
+            self.mi += [first, center]; self.mj += [p1, p2]; self.mk += [p2, p1]
+        self.mt += [text] * (self.RING + 2)
+        return base
+
+    def hover(self, p, text):
+        self.hx.append(p[0]); self.hy.append(p[1]); self.hz.append(p[2]); self.ht.append(text)
+
+    def label(self, p, text):
+        self.tx.append(p[0]); self.ty.append(p[1]); self.tz.append(p[2]); self.tt.append(text)
+
+    def add_to(self, fig, name, color, legend=True):
+        if not self.sx:
+            return
+        fig.add_trace(go.Scatter3d(
+            x=self.sx, y=self.sy, z=self.sz, mode="lines", name=name, legendgroup=name, meta="load",
+            showlegend=legend, line=dict(color=color, width=6), hoverinfo="skip"))
+        fig.add_trace(go.Mesh3d(
+            x=self.mx, y=self.my, z=self.mz, i=self.mi, j=self.mj, k=self.mk, color=color, flatshading=True,
+            name=name, legendgroup=name, showlegend=False, meta="load",
+            text=self.mt, hovertemplate="%{text}<extra></extra>",
+            lighting=dict(ambient=0.9, diffuse=0.3, specular=0.0)))
+        fig.add_trace(go.Scatter3d(
+            x=self.hx, y=self.hy, z=self.hz, mode="markers", name=name, legendgroup=name, showlegend=False,
+            meta="load", marker=dict(size=4, color=color), text=self.ht, hovertemplate="%{text}<extra></extra>"))
+        if self.tt:
+            fig.add_trace(go.Scatter3d(
+                x=self.tx, y=self.ty, z=self.tz, mode="text", text=self.tt, name=name + " labels",
+                legendgroup=name, showlegend=False, meta="load", textfont=dict(color=color, size=12),
+                hoverinfo="skip"))
+
+
+def _perp(d):
+    """Unit vectors u, w perpendicular to the unit vector d, with u x w = d (right-hand rule)."""
+    ref = (0.0, 0.0, 1.0) if abs(d[2]) < 0.9 else (1.0, 0.0, 0.0)
+    u = (d[1] * ref[2] - d[2] * ref[1], d[2] * ref[0] - d[0] * ref[2], d[0] * ref[1] - d[1] * ref[0])
+    n = math.sqrt(sum(c * c for c in u))
+    u = tuple(c / n for c in u)
+    w = (d[1] * u[2] - d[2] * u[1], d[2] * u[0] - d[0] * u[2], d[0] * u[1] - d[1] * u[0])
+    return u, w
+
+
 def add_loads(fig: go.Figure, changes, case: int, show_before: bool = True, show_after: bool = True,
-              components: Sequence[str] = ("Fx", "Fy", "Fz"), length: Optional[float] = None,
+              components: Sequence[str] = ("Fx", "Fy", "Fz", "Mx", "My", "Mz"), length: Optional[float] = None,
               label_min: float = 0.0) -> go.Figure:
-    """Draw load arrows (before = blue, after = red) for one load case; returns fig."""
+    """Draw the loads of one case: before mirroring in blue, after in red.
+
+    Forces are straight arrows that start at the loaded node or bearing and point the way the
+    force acts; length is proportional to the force (resultant of the chosen force components)
+    and the largest force is ``length`` long (display units; default 12 % of the cap size).
+    Moments are curved arrows around the moment axis, turning by the right-hand rule; the
+    radius is proportional to the moment.  Magnitudes are written at the arrow heads and
+    every arrow shows all six components on hover.
+    """
     _drop(fig, "load")
     k_scale = _scale(fig)
-    idx = [_COMPONENTS.index(c) for c in components if c in _COMPONENTS]
-    if length is None:
+    f_idx = [i for i, c in enumerate(_COMPONENTS[:3]) if c in components]
+    m_idx = [i for i, c in enumerate(_COMPONENTS[3:], start=3) if c in components]
+    if not length:
         length = 0.12 * _span(fig)
-    sets = []   # (name, color, items)
+    sets = []
     for show, name, color, after in ((show_before, "Before (base)", BEFORE_COLOR, False),
                                      (show_after, "After (mirrored)", AFTER_COLOR, True)):
         if not show:
@@ -241,66 +335,66 @@ def add_loads(fig: go.Figure, changes, case: int, show_before: bool = True, show
             pos = ch.new_pos if after else ch.pos
             if pos is None:
                 continue
-            pos = tuple(c * k_scale for c in pos)
             vals = ch.after if after else ch.before
-            vec = [0.0, 0.0, 0.0]
-            for c in idx:
-                if c < 3 and c < len(vals):
-                    vec[c] = float(vals[c])
-            mag = math.sqrt(sum(v * v for v in vec))
-            if mag <= 0.0:
+            fvec = [float(vals[i]) if i in f_idx else 0.0 for i in range(3)]
+            mvec = [float(vals[i]) if i in m_idx else 0.0 for i in range(3, 6)]
+            fmag = math.sqrt(sum(c * c for c in fvec))
+            mmag = math.sqrt(sum(c * c for c in mvec))
+            if fmag <= 0.0 and mmag <= 0.0:
                 continue
-            items.append((ch, pos, vec, mag, vals, ch.new_label if after else ch.label))
-        sets.append((name, color, items))
-    mags = [it[3] for _, _, items in sets for it in items]
-    if not mags:
+            items.append((ch, tuple(c * k_scale for c in pos), fvec, fmag, mvec, mmag, vals,
+                          ch.new_label if after else ch.label))
+        sets.append((name, color, after, items))
+    fmax = max([it[3] for s in sets for it in s[3]] or [0.0])
+    mmax = max([it[5] for s in sets for it in s[3]] or [0.0])
+    if fmax <= 0.0 and mmax <= 0.0:
         return fig
-    vmax = max(mags)
-    floor = 0.15 * length
-    for name, color, items in sets:
+    f_names = "+".join(_COMPONENTS[i] for i in f_idx)
+    m_names = "+".join(_COMPONENTS[i] for i in m_idx)
+    for name, color, after, items in sets:
         if not items:
             continue
-        sx, sy, sz = [], [], []
-        hx, hy, hz, hu, hv, hw = [], [], [], [], [], []
-        tx, ty, tz, tt, th = [], [], [], [], []
-        for ch, pos, vec, mag, vals, lab in items:
-            L = max(length * mag / vmax, floor)
-            d = [v / mag for v in vec]
-            tail = pos
-            # FB-MultiPier forces act toward +direction; arrow points along the force, tip at pos + L*d
-            tip = (pos[0] + d[0] * L, pos[1] + d[1] * L, pos[2] + d[2] * L)
-            head = min(0.35 * L, 0.4 * length)
-            base = (tip[0] - d[0] * head, tip[1] - d[1] * head, tip[2] - d[2] * head)
-            sx += [tail[0], tip[0], None]
-            sy += [tail[1], tip[1], None]
-            sz += [tail[2], tip[2], None]
-            hx.append(tip[0]); hy.append(tip[1]); hz.append(tip[2])
-            hu.append(d[0] * head); hv.append(d[1] * head); hw.append(d[2] * head)
-            if mag >= label_min:
-                off = 0.04 * length
-                tx.append(tip[0] + d[0] * off); ty.append(tip[1] + d[1] * off); tz.append(tip[2] + d[2] * off)
-                tt.append(f"{mag:.3g}")
-            hover = [f"{ch.line.type} (case {ch.line.case})", f"{ch.line.section} target {lab}"]
-            hover.append("<br>".join(f"{c} = {v:.2f}" for c, v in zip(_COMPONENTS, vals)))
-            th.append("<br>".join(hover))
-        fig.add_trace(go.Scatter3d(
-            x=sx, y=sy, z=sz, mode="lines", name=name, legendgroup=name, meta="load",
-            line=dict(color=color, width=5), hoverinfo="skip"))
-        # arrow heads: a diamond at the tip (cones do not size reliably across plotly versions)
-        fig.add_trace(go.Scatter3d(
-            x=hx, y=hy, z=hz, mode="markers", name=name, legendgroup=name, showlegend=False, meta="load",
-            marker=dict(size=5, color=color, symbol="diamond"), hoverinfo="skip"))
-        # tail markers carry hover text for every load; labels only where above label_min
-        tails = [it[1] for it in items]
-        fig.add_trace(go.Scatter3d(
-            x=[p[0] for p in tails], y=[p[1] for p in tails], z=[p[2] for p in tails],
-            mode="markers", name=name, legendgroup=name, showlegend=False, meta="load",
-            marker=dict(size=3, color=color, opacity=0.6),
-            text=th, hovertemplate="%{text}<extra></extra>"))
-        if tt:
-            fig.add_trace(go.Scatter3d(
-                x=tx, y=ty, z=tz, mode="text", text=tt, name=name + " labels", legendgroup=name,
-                showlegend=False, meta="load", textfont=dict(color=color, size=11), hoverinfo="skip"))
+        g = _Glyphs()
+        for ch, pos, fvec, fmag, mvec, mmag, vals, lab in items:
+            where = "bearing" if ch.line.section == "LOADBP" else "node"
+            detail = (f"{ch.line.type}, case {ch.line.case}, {'after mirroring' if after else 'before'}<br>{where} {lab}<br>"
+                      + ", ".join(f"{c} {x:.4g}" for c, x in zip(_COMPONENTS[:3], vals[:3])) + " kips<br>"
+                      + ", ".join(f"{c} {x:.4g}" for c, x in zip(_COMPONENTS[3:], vals[3:])) + " kip-ft")
+            if fmag > 0.0:
+                text = f"<b>{fmag:.4g} kips</b> ({f_names})<br>" + detail
+                L = max(length * fmag / fmax, 0.03 * length)
+                d = tuple(c / fmag for c in fvec)
+                tip = tuple(p + c * L for p, c in zip(pos, d))
+                base = g.head(tip, d, min(L, max(0.28 * L, 0.035 * length)), text)
+                g.path([pos, base])
+                g.hover(pos, text)
+                g.hover(tuple(p + c * L * 0.5 for p, c in zip(pos, d)), text)
+                if fmag >= label_min:
+                    g.label(tuple(t + c * 0.03 * length for t, c in zip(tip, d)), f"{fmag:.3g} k")
+            if mmag > 0.0:
+                text = f"<b>{mmag:.4g} kip-ft</b> ({m_names}, right-hand rule)<br>" + detail
+                axis = tuple(c / mmag for c in mvec)
+                u, w = _perp(axis)
+                radius = max(0.45 * length * mmag / mmax, 0.12 * length)
+                sweep = math.radians(270.0)
+                steps = 28
+                pts = []
+                for q in range(steps + 1):
+                    ang = sweep * q / steps
+                    pts.append(tuple(p + radius * (math.cos(ang) * cu + math.sin(ang) * cw)
+                                     for p, cu, cw in zip(pos, u, w)))
+                end = pts[-1]
+                tangent = tuple(-math.sin(sweep) * cu + math.cos(sweep) * cw for cu, cw in zip(u, w))
+                size = 0.45 * radius
+                tip = tuple(e + c * size * 0.5 for e, c in zip(end, tangent))
+                g.head(tip, tangent, size, text)
+                g.path(pts)
+                g.hover(pts[steps // 3], text)
+                g.hover(pts[2 * steps // 3], text)
+                if mmag >= label_min:
+                    out = tuple((e - p) / radius for e, p in zip(end, pos))
+                    g.label(tuple(e + c * 0.25 * radius for e, c in zip(end, out)), f"{mmag:.3g} k-ft")
+        g.add_to(fig, name, color)
     return fig
 
 
@@ -328,7 +422,8 @@ def add_cut(fig: go.Figure, p0: Sequence[float], p1: Sequence[float], z: float,
 
 
 def envelope_figure(stations: Sequence[float], series: Dict[str, Sequence[float]], title: str,
-                    y_title: str, x_title: str = "Distance along cut (ft)", height: int = 380) -> go.Figure:
+                    y_title: str, x_title: str = "Distance along cut (ft)", height: int = 380,
+                    width: Optional[int] = None) -> go.Figure:
     """2D max/min (or any named series) plot along a section cut."""
     fig = go.Figure()
     colors = {"Max": AFTER_COLOR, "Min": BEFORE_COLOR}

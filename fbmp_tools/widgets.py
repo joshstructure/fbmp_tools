@@ -96,6 +96,28 @@ class FbmpApp:
               f"{len(m.combos)} load combinations")
         print(f"Pile cap X {x0 / FT:.2f} to {x1 / FT:.2f} ft, Y {y0 / FT:.2f} to {y1 / FT:.2f} ft; "
               f"mirror planes X = {(x0 + x1) / 2 / FT:.3f} ft, Y = {(y0 + y1) / 2 / FT:.3f} ft")
+        groups: Dict[str, int] = {}
+        for n in m.nodes.values():
+            groups[n.group] = groups.get(n.group, 0) + 1
+        kinds: Dict[str, int] = {}
+        for e in m.frame_elements:
+            kinds[e.kind] = kinds.get(e.kind, 0) + 1
+        print(f"Structure type: {m.structure_type or 'not stated'}; node groups: "
+              + ", ".join(f"{g} {c}" for g, c in groups.items())
+              + "; elements: " + ", ".join(f"{k} {c}" for k, c in kinds.items())
+              + (f", pile cap {len(m.cap_elements)}" if m.cap_elements else ""))
+        known = {"pile", "cap", "pier", "bearingL", "bearingR"}
+        if set(groups) - known:
+            print("Note: node groups this tool has not been tried on: " + ", ".join(sorted(set(groups) - known))
+                  + ". They are drawn and can be mirrored (nearest node of the same group), but check the result.")
+        if m.substructures > 1:
+            print(f"WARNING: the .out has {m.substructures} substructures (a multi-pier model). The tool was built on "
+                  "single-pier models; node numbers and mirror planes are not handled per pier. Do not rely on it here.")
+        if not m.cap_nodes:
+            print("Note: no pile cap nodes in the .out (pile bent or similar). Mirror planes default to the middle of "
+                  "all nodes; set them in step 2 if needed. Section cuts need a pile cap and are not available.")
+        if not any(ld.section == "LOADBP" for ld in self.infile.loads):
+            print("Note: no bearing loads (LOADBP) in the .in; only nodal loads will be mirrored.")
         if self.infile.unparsed:
             print(f"WARNING: {len(self.infile.unparsed)} line(s) in LOAD / LOADBP were not understood "
                   f"(first: line {self.infile.unparsed[0] + 1}); they will be copied unchanged.")
@@ -329,6 +351,10 @@ class FbmpApp:
         after = W.Checkbox(value=True, description="After (red)", indent=False)
         pile_nodes = W.Checkbox(value=True, description="Pile nodes and elements", indent=False)
         depth = W.FloatText(value=0.0, description="Pile depth shown (ft, 0 = all)", style=_STYLE)
+        comps = [W.Checkbox(value=True, description=c, indent=False, layout=W.Layout(width="60px"))
+                 for c in ("Fx", "Fy", "Fz", "Mx", "My", "Mz")]
+        arrow = W.FloatText(value=0.0, description="Longest arrow (ft, 0 = auto)", style=_STYLE)
+        width = W.IntText(value=1100, description="Plot width (px)", style=_STYLE)
         go = W.Button(description="Draw", button_style="primary")
         out = W.Output()
 
@@ -347,33 +373,41 @@ class FbmpApp:
         def run(_):
             out.clear_output()
             with out:
-                if self.model is None:
-                    print("Read the base files first (step 1).")
-                    return
-                fig = viz.model_figure(self.model, show_pile_nodes=pile_nodes.value,
-                                       max_pile_depth=(depth.value * FT) or None, title=self.base_name)
-                res = self.results.get(direction.value)
-                if res is None and self.infile is not None:      # nothing mirrored yet: show the base loads
-                    res = mirror_loads(self.infile, self.model, "X", set())
-                    after.value = False
-                if res is not None and case.value is not None:
-                    viz.add_loads(fig, res.changes, case.value, show_before=before.value, show_after=after.value)
-                    rows = [ch for ch in res.changes if ch.line.case == case.value]
-                    moved = sum(1 for ch in rows if ch.mirrored)
-                    print(f"Case {case.value} ({rows[0].line.type if rows else ''}): {len(rows)} load lines, {moved} mirrored. "
-                          "Hover a node, element or arrow tail for its numbers.")
-                meta = fig.layout.meta
-                print(f"Showing {meta['nodes_shown']:,} of {meta['nodes_total']:,} nodes and {meta['elements_shown']:,} of "
-                      f"{meta['elements_total']:,} elements, in feet. Click a legend entry to hide or show that group.")
-                fig.show()
+                try:
+                    if self.model is None:
+                        print("Read the base files first (step 1).")
+                        return
+                    fig = viz.model_figure(self.model, show_pile_nodes=pile_nodes.value,
+                                           max_pile_depth=(depth.value * FT) or None, title=self.base_name,
+                                           width=width.value or None)
+                    res = self.results.get(direction.value)
+                    if res is None and self.infile is not None:      # nothing mirrored yet: show the base loads
+                        res = mirror_loads(self.infile, self.model, "X", set())
+                        after.value = False
+                    if res is not None and case.value is not None:
+                        viz.add_loads(fig, res.changes, case.value, show_before=before.value, show_after=after.value,
+                                      components=[c.description for c in comps if c.value], length=arrow.value or None)
+                        rows = [ch for ch in res.changes if ch.line.case == case.value]
+                        moved = sum(1 for ch in rows if ch.mirrored)
+                        print(f"Case {case.value} ({rows[0].line.type if rows else ''}): {len(rows)} load lines, {moved} mirrored. "
+                              "Straight arrows are forces, curved arrows are moments (right-hand rule); size is proportional "
+                          "to the magnitude. Hover an arrow for its values.")
+                    meta = fig.layout.meta
+                    print(f"Showing {meta['nodes_shown']:,} of {meta['nodes_total']:,} nodes and {meta['elements_shown']:,} of "
+                          f"{meta['elements_total']:,} elements, in feet. Click a legend entry to hide or show that group.")
+                    fig.show()
+                except Exception as exc:
+                    print(f"Something went wrong: {type(exc).__name__}: {exc}")
+
 
         go.on_click(run)
         self._listeners.append(refresh)
         refresh()
         return W.VBox([
             W.HTML("<b>3. 3D view</b> &nbsp; nodes and elements with hover labels; loads before mirroring in blue, after in red, "
-                   "labelled with their magnitude (kips)."),
-            W.HBox([direction, case]), W.HBox([before, after, pile_nodes, depth]), go, out,
+                   "as arrows scaled to the force, labelled in kips; hover an arrow for all six components."),
+            W.HBox([direction, case]), W.HBox([before, after, W.HTML('&nbsp; Show:'), *comps]),
+            W.HBox([pile_nodes, depth]), W.HBox([arrow, width]), go, out,
         ])
 
     # ------------------------------------------------------------------ 4
@@ -412,81 +446,85 @@ class FbmpApp:
         def run(_):
             out.clear_output()
             with out:
-                if not self.cap_sets:
-                    print("Read at least one results file first.")
-                    return
-                m = self.model
-                x0, x1, y0, y1 = m.cap_extents()
                 try:
-                    if mode.value == "x":
-                        p0, p1, sweep_axis = (pos.value * FT, y0), (pos.value * FT, y1), "x"
-                    elif mode.value == "y":
-                        p0, p1, sweep_axis = (x0, pos.value * FT), (x1, pos.value * FT), "y"
-                    else:
-                        a, b = m.nodes[node_a.value], m.nodes[node_b.value]
-                        p0, p1, sweep_axis = (a.x, a.y), (b.x, b.y), None
-                except KeyError as exc:
-                    print(f"Node {exc} is not in the model.")
-                    return
-                on = cuts.nodes_on_line(m, p0, p1, tol.value * FT)
-                els = cuts.elements_on_line(m, p0, p1)
-                print(f"Cut from ({p0[0] / FT:.3f}, {p0[1] / FT:.3f}) to ({p1[0] / FT:.3f}, {p1[1] / FT:.3f}) ft: "
-                      f"{len(on)} pile cap nodes on the line, {len(els)} cap elements crossed.")
-                rows = []
-                per_combo = None
-                for name, capf in self.cap_sets.items():
-                    res = cuts.cut(capf, p0, p1)
-                    s = res.summary()
-                    rows.append("<tr><td style='padding:3px 10px;border:1px solid #999'><b>%s</b></td>%s"
-                                "<td style='padding:3px 10px;border:1px solid #999;text-align:right'>%s</td></tr>" % (
-                                    html.escape(name),
-                                    "".join(f"<td style='padding:3px 10px;border:1px solid #999;text-align:right'>{v:,.1f}</td>"
-                                            f"<td style='padding:3px 10px;border:1px solid #999;text-align:right'>{c}</td>"
-                                            for v, c in s.values()),
-                                    f"{float(np.abs(res.unbalance).max()):,.0f}"))
-                    if per_combo is None:
-                        per_combo = viz.envelope_figure(
-                            res.combos, {"Max": list(res.moment_max), "Min": list(res.moment_min)},
-                            f"Moment on the cut, every load combination ({name})", "Moment (kip-ft)", x_title="Load combination")
-                        shear_fig = viz.envelope_figure(
-                            res.combos, {"Shear": list(res.shear_abs)},
-                            f"Vertical shear on the cut, every load combination ({name})", "Shear (kips)", x_title="Load combination")
-                head = ("<tr><th style='padding:3px 10px;border:1px solid #999'>Results</th>"
-                        + "".join(f"<th style='padding:3px 10px;border:1px solid #999'>{h}</th>"
-                                  "<th style='padding:3px 10px;border:1px solid #999'>Comb</th>"
-                                  for h in ("Max. moment (+), bottom steel, kip-ft", "Min. moment (-), top steel, kip-ft",
-                                            "Max. shear (abs), kips"))
-                        + "<th style='padding:3px 10px;border:1px solid #999'>Two-side difference, kip-ft</th></tr>")
-                display(HTML(f"<table style='border-collapse:collapse;font-size:13px'>{head}{''.join(rows)}</table>"
-                             "<div style='font-size:12px;color:#666'>Totals across the full cut, from statics of the pile cap "
-                             "(pile heads, columns, self weight, cap loads). Two-side difference = moment by which the two sides "
-                             "of the cut disagree; it builds up on the heavier side, so the values shown are taken from the lighter side. A column or pile on the line "
-                             "applies its moment at the cut, so the two faces differ there and the larger is reported.</div>"))
-                per_combo.show()
-                shear_fig.show()
-                if sweep_axis:
-                    lo, hi = (x0, x1) if sweep_axis == "x" else (y0, y1)
-                    stations = np.linspace(lo, hi, 61)
+                    if not self.cap_sets:
+                        print("Read at least one results file first (cell 4a).")
+                        return
+                    m = self.model
+                    x0, x1, y0, y1 = m.cap_extents()
+                    try:
+                        if mode.value == "x":
+                            p0, p1, sweep_axis = (pos.value * FT, y0), (pos.value * FT, y1), "x"
+                        elif mode.value == "y":
+                            p0, p1, sweep_axis = (x0, pos.value * FT), (x1, pos.value * FT), "y"
+                        else:
+                            a, b = m.nodes[node_a.value], m.nodes[node_b.value]
+                            p0, p1, sweep_axis = (a.x, a.y), (b.x, b.y), None
+                    except KeyError as exc:
+                        print(f"Node {exc} is not in the model.")
+                        return
+                    on = cuts.nodes_on_line(m, p0, p1, tol.value * FT)
+                    els = cuts.elements_on_line(m, p0, p1)
+                    print(f"Cut from ({p0[0] / FT:.3f}, {p0[1] / FT:.3f}) to ({p1[0] / FT:.3f}, {p1[1] / FT:.3f}) ft: "
+                          f"{len(on)} pile cap nodes on the line, {len(els)} cap elements crossed.")
+                    rows = []
+                    per_combo = None
                     for name, capf in self.cap_sets.items():
-                        env = cuts.sweep(capf, sweep_axis, stations)
-                        viz.envelope_figure(
-                            list(stations / FT), {"Max": list(env["Max moment"]), "Min": list(env["Min moment"])},
-                            f"Max / min moment for cuts along {sweep_axis.upper()}, all combinations ({name})",
-                            "Moment (kip-ft)", x_title=f"Cut position, {sweep_axis.upper()} (ft)").show()
-                        viz.envelope_figure(
-                            list(stations / FT), {"Max shear": list(env["Max shear"])},
-                            f"Max shear for cuts along {sweep_axis.upper()}, all combinations ({name})",
-                            "Shear (kips)", x_title=f"Cut position, {sweep_axis.upper()} (ft)").show()
-                fig = viz.model_figure(m, show_pile_nodes=False, max_pile_depth=120.0, title="Section cut", height=520, show_elements=False)
-                viz.add_cut(fig, p0, p1, m.cap_z, [(n.x, n.y, n.z) for _, n in on])
-                fig.show()
-                table = "".join(f"<tr><td style='padding:1px 10px'>{n.id}</td><td style='padding:1px 10px;text-align:right'>{s / FT:.3f}</td>"
-                                f"<td style='padding:1px 10px;text-align:right'>{n.x / FT:.3f}</td><td style='padding:1px 10px;text-align:right'>{n.y / FT:.3f}</td>"
-                                f"<td style='padding:1px 10px'>{'pile ' + str(n.pile) if n.pile_head else ''}</td></tr>" for s, n in on)
-                display(HTML("<details><summary>Nodes on the cut line (%d) and elements crossed (%d)</summary>"
-                             "<table style='font-size:12px'><tr><th>Node</th><th>Station (ft)</th><th>X (ft)</th><th>Y (ft)</th><th></th></tr>%s</table>"
-                             "<div style='font-size:12px'>Elements: %s</div></details>"
-                             % (len(on), len(els), table, ", ".join(str(e.id) for e in els))))
+                        res = cuts.cut(capf, p0, p1)
+                        s = res.summary()
+                        rows.append("<tr><td style='padding:3px 10px;border:1px solid #999'><b>%s</b></td>%s"
+                                    "<td style='padding:3px 10px;border:1px solid #999;text-align:right'>%s</td></tr>" % (
+                                        html.escape(name),
+                                        "".join(f"<td style='padding:3px 10px;border:1px solid #999;text-align:right'>{v:,.1f}</td>"
+                                                f"<td style='padding:3px 10px;border:1px solid #999;text-align:right'>{c}</td>"
+                                                for v, c in s.values()),
+                                        f"{float(np.abs(res.unbalance).max()):,.0f}"))
+                        if per_combo is None:
+                            per_combo = viz.envelope_figure(
+                                res.combos, {"Max": list(res.moment_max), "Min": list(res.moment_min)},
+                                f"Moment on the cut, every load combination ({name})", "Moment (kip-ft)", x_title="Load combination")
+                            shear_fig = viz.envelope_figure(
+                                res.combos, {"Shear": list(res.shear_abs)},
+                                f"Vertical shear on the cut, every load combination ({name})", "Shear (kips)", x_title="Load combination")
+                    head = ("<tr><th style='padding:3px 10px;border:1px solid #999'>Results</th>"
+                            + "".join(f"<th style='padding:3px 10px;border:1px solid #999'>{h}</th>"
+                                      "<th style='padding:3px 10px;border:1px solid #999'>Comb</th>"
+                                      for h in ("Max. moment (+), bottom steel, kip-ft", "Min. moment (-), top steel, kip-ft",
+                                                "Max. shear (abs), kips"))
+                            + "<th style='padding:3px 10px;border:1px solid #999'>Two-side difference, kip-ft</th></tr>")
+                    display(HTML(f"<table style='border-collapse:collapse;font-size:13px'>{head}{''.join(rows)}</table>"
+                                 "<div style='font-size:12px;color:#666'>Totals across the full cut, from statics of the pile cap "
+                                 "(pile heads, columns, self weight, cap loads). Two-side difference = moment by which the two sides "
+                                 "of the cut disagree; it builds up on the heavier side, so the values shown are taken from the lighter side. A column or pile on the line "
+                                 "applies its moment at the cut, so the two faces differ there and the larger is reported.</div>"))
+                    per_combo.show()
+                    shear_fig.show()
+                    if sweep_axis:
+                        lo, hi = (x0, x1) if sweep_axis == "x" else (y0, y1)
+                        stations = np.linspace(lo, hi, 61)
+                        for name, capf in self.cap_sets.items():
+                            env = cuts.sweep(capf, sweep_axis, stations)
+                            viz.envelope_figure(
+                                list(stations / FT), {"Max": list(env["Max moment"]), "Min": list(env["Min moment"])},
+                                f"Max / min moment for cuts along {sweep_axis.upper()}, all combinations ({name})",
+                                "Moment (kip-ft)", x_title=f"Cut position, {sweep_axis.upper()} (ft)").show()
+                            viz.envelope_figure(
+                                list(stations / FT), {"Max shear": list(env["Max shear"])},
+                                f"Max shear for cuts along {sweep_axis.upper()}, all combinations ({name})",
+                                "Shear (kips)", x_title=f"Cut position, {sweep_axis.upper()} (ft)").show()
+                    fig = viz.model_figure(m, show_pile_nodes=False, max_pile_depth=120.0, title="Section cut", height=520, show_elements=False, width=1000)
+                    viz.add_cut(fig, p0, p1, m.cap_z, [(n.x, n.y, n.z) for _, n in on])
+                    fig.show()
+                    table = "".join(f"<tr><td style='padding:1px 10px'>{n.id}</td><td style='padding:1px 10px;text-align:right'>{s / FT:.3f}</td>"
+                                    f"<td style='padding:1px 10px;text-align:right'>{n.x / FT:.3f}</td><td style='padding:1px 10px;text-align:right'>{n.y / FT:.3f}</td>"
+                                    f"<td style='padding:1px 10px'>{'pile ' + str(n.pile) if n.pile_head else ''}</td></tr>" for s, n in on)
+                    display(HTML("<details><summary>Nodes on the cut line (%d) and elements crossed (%d)</summary>"
+                                 "<table style='font-size:12px'><tr><th>Node</th><th>Station (ft)</th><th>X (ft)</th><th>Y (ft)</th><th></th></tr>%s</table>"
+                                 "<div style='font-size:12px'>Elements: %s</div></details>"
+                                 % (len(on), len(els), table, ", ".join(str(e.id) for e in els))))
+                except Exception as exc:
+                    print(f"Something went wrong: {type(exc).__name__}: {exc}")
+
 
         add.on_click(read)
         go.on_click(run)
