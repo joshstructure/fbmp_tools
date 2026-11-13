@@ -432,6 +432,25 @@ def add_cut(fig: go.Figure, p0: Sequence[float], p1: Sequence[float], z: float,
     return fig
 
 
+def add_highlight(fig: go.Figure, segments, points, picked=None, name: str = "On the cut plane") -> go.Figure:
+    """Highlight elements (pairs of xyz, model units), nodes and the picked node."""
+    _drop(fig, "cut")
+    k = _scale(fig)
+    x, y, z = _segments([(tuple(c * k for c in a), tuple(c * k for c in b)) for a, b in segments])
+    if x:
+        fig.add_trace(go.Scatter3d(x=x, y=y, z=z, mode="lines", name=name, meta="cut",
+                                   line=dict(color=CUT_COLOR, width=9), hoverinfo="skip"))
+    if points:
+        fig.add_trace(go.Scatter3d(
+            x=[p[0] * k for p in points], y=[p[1] * k for p in points], z=[p[2] * k for p in points],
+            mode="markers", name=name + " (nodes)", meta="cut", marker=dict(size=3, color=CUT_COLOR), hoverinfo="skip"))
+    if picked is not None:
+        fig.add_trace(go.Scatter3d(
+            x=[picked[0] * k], y=[picked[1] * k], z=[picked[2] * k], mode="markers", name="Picked node", meta="cut",
+            marker=dict(size=9, color="#111111", symbol="diamond"), hoverinfo="skip"))
+    return fig
+
+
 def envelope_figure(stations: Sequence[float], series: Dict[str, Sequence[float]], title: str,
                     y_title: str, x_title: str = "Distance along cut (ft)", height: int = 380,
                     width: Optional[int] = None) -> go.Figure:

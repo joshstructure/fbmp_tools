@@ -245,18 +245,21 @@ def read_results(source: Source, model: OutModel, combos: Optional[Iterable[int]
     mode = ""            # 'pile', 'connector', 'column', ''
     index = 0            # pile or column number
     need_first = False
-    cap_z = model.cap_z
+    in_pile = False      # pile displacement and soil tables reuse the "Pile Number" heading
     for raw in _lines(source):
         if "RESULTS FOR LOAD COMBINATION" in raw:
             m = re.search(r"RESULTS FOR LOAD COMBINATION\s+(\d+)", raw)
             combo = int(m.group(1))
             current = None if (wanted is not None and combo not in wanted) else results.setdefault(combo, ComboResult(combo))
             mode = ""
+            in_pile = False
             continue
         if current is None:
             continue
         if raw.startswith(" -") or raw.startswith(" *") or raw.startswith(" _"):
-            m = re.search(r"- Pile Number\s+(\d+)", raw)
+            if "- Analytical Force Results for each Pile" in raw:
+                in_pile = True
+            m = re.search(r"- Pile Number\s+(\d+)", raw) if in_pile else None
             if m:
                 mode, index, need_first = "pile", int(m.group(1)), True
                 continue

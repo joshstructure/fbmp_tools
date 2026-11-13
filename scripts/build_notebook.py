@@ -114,7 +114,7 @@ results_path = ""  # @param {type:"string"}
 app.load_results(run_of, results_path)
 '''),
         code('''
-# @title 4b. Section cut: max and min forces
+# @title 4b. Section cut by node and axis: max and min element forces
 display(app.cut_panel())
 '''),
         md('''
@@ -134,11 +134,14 @@ Gray: the component is zero in the model.
 (node and element tables, load combinations, pile head and column forces) are sent to the notebook: a few MB
 instead of hundreds. If a cell seems stuck, use Runtime > Disconnect and delete runtime, reload the page and start again.
 
-**Section cuts.** FB-MultiPier prints pile cap stresses only when that print option is on, and these files
-usually have it off. The cut forces here come from statics of the pile cap as a free body: pile head forces,
-column forces, cap self weight and loads applied to cap nodes. They are totals across the full cut
-(moment in kip-ft, shear in kips), not a distribution per inch along the cut. Each results file reports how
-well the whole cap closes; treat a cut as unreliable if that check is poor. Battered piles have not been checked.
+**Section cuts.** Give a node number and an axis. The cut plane passes through that node, normal to the axis
+(axis X: everything at the node's X). Every frame element lying in that plane (piles, columns, cap beams, extra
+members) is grouped into members and plotted as max and min over all load combinations, with the governing
+combination on hover. Forces are in element local axes as FB-MultiPier prints them (FAX, F22, F33 in kips; M22, M33,
+TORQUE in kip-ft), with the sign made continuous along each member.
+The pile cap itself is made of shell elements, and FB-MultiPier prints their forces only when "pile cap stresses"
+is switched on. For a vertical plane through a pile cap the tool therefore also reports total moment and shear on the
+cut by statics (pile heads, columns, self weight, cap loads): totals across the full cut, not per foot.
 
 **To compare a mirrored run.** Run the generated `_Mirror?.in` in FB-MultiPier, then in step 4 choose
 "Mirror X" (or Y, XY) and read that run's .out. The table then shows every loaded results set side by side.

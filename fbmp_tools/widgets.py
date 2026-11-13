@@ -18,7 +18,7 @@ import ipywidgets as W
 import numpy as np
 from IPython.display import HTML, display
 
-from . import colab_upload, cuts, viz
+from . import colab_upload, cuts, elemforces, viz
 from .infile import COMPONENTS, InFile, load_family, parse_in
 from .mirror import DEFAULT_FAMILIES, DIRECTIONS, MirrorResult, format_report, mirror_loads
 from .outfile import OutModel, read_model, read_results
@@ -27,6 +27,7 @@ _LEVEL_COLOR = {"ok": "#c9efc9", "check": "#fff3a6", "problem": "#f6b4b4", "na":
 _WIDE = W.Layout(width="100%")
 _STYLE = {"description_width": "170px"}
 FT = 12.0     # model length units (inches) per foot; everything on screen is in feet
+AXIS_WORDS = {"X": "X", "Y": "Y", "Z": "Z (down)"}
 
 
 def _uploaded(widget) -> Optional[tuple]:
@@ -75,6 +76,7 @@ class FbmpApp:
         self.model: Optional[OutModel] = None
         self.results: Dict[str, MirrorResult] = {}
         self.cap_sets: Dict[str, cuts.CapForces] = {}
+        self.elem_sets: Dict[str, elemforces.ElementForces] = {}
         self._listeners: List = []
 
     # ------------------------------------------------------------------ files
@@ -88,6 +90,7 @@ class FbmpApp:
         self.base_out = src_out
         self.results.clear()
         self.cap_sets.clear()
+        self.elem_sets.clear()
         m = self.model
         x0, x1, y0, y1 = m.cap_extents()
         print(f"{name_in}: {len(self.infile.loads)} load lines, load types: {', '.join(self.infile.families())}")
@@ -170,23 +173,24 @@ class FbmpApp:
                 print(f"Mirror the loads first (step 2) so the {run_of} input is known.")
                 return
             infile = parse_in(self.results[key].text)
-        if not self.model.cap_elements:
-            print("This model has no pile cap (shell elements), so section cuts through a pile cap do not apply.")
-            return
         print(f"Reading results for {run_of} ...")
-        results = read_results(source, self.model)
-        capf = cuts.build_cap_forces(self.model, infile, results)
-        self.cap_sets[run_of] = capf
-        resid = np.abs(capf.residual())
-        load = float(np.abs(capf.vertical_load()).max())
-        print(f"{len(capf.combos)} load combinations. Free-body check of the whole pile cap: largest unbalanced force "
-              f"{resid[:, :3].max():.1f} kips, moment {resid[:, 3:].max():.0f} kip-ft "
-              f"(total vertical load up to {load:,.0f} kips).")
-        if resid[:, :3].max() > 0.02 * max(load, 1.0):
-            print("WARNING: the pile cap free body does not close within 2 %. Do not use the cut values "
-                  "until this is understood (wrong .out for this model, or battered piles).")
-        for note in capf.notes:
-            print("Note:", note)
+        forces = elemforces.read_element_forces(source, self.model)
+        self.elem_sets[run_of] = forces
+        have = int((~np.isnan(forces.data[0]).all(axis=(1, 2))).sum())
+        print(f"{len(forces.combos)} load combinations; end forces read for {have:,} of {len(forces.elem_ids):,} "
+              "frame elements (piles, columns, cap beams, extra members).")
+        if self.model.cap_elements:
+            capf = cuts.build_cap_forces(self.model, infile, read_results(source, self.model))
+            self.cap_sets[run_of] = capf
+            resid = np.abs(capf.residual())
+            load = float(np.abs(capf.vertical_load()).max())
+            print(f"Pile cap free-body check: largest unbalanced force {resid[:, :3].max():.1f} kips, moment "
+                  f"{resid[:, 3:].max():.0f} kip-ft (total vertical load up to {load:,.0f} kips).")
+            if resid[:, :3].max() > 0.02 * max(load, 1.0):
+                print("WARNING: the pile cap free body does not close within 2 %. Do not use the pile cap totals "
+                      "until this is understood (wrong .out for this model, or battered piles).")
+            for note in capf.notes:
+                print("Note:", note)
         for fn in self._listeners:
             fn()
 
@@ -300,6 +304,7 @@ class FbmpApp:
                     os.makedirs(self.output_dir, exist_ok=True)
                     self.results.clear()
                     self.cap_sets = {k: v for k, v in self.cap_sets.items() if k == "Base"}
+                    self.elem_sets = {k: v for k, v in self.elem_sets.items() if k == "Base"}
                     written = []
                     for d, cb in zip(DIRECTIONS, dirs):
                         if not cb.value:
@@ -419,123 +424,124 @@ class FbmpApp:
         res_path = W.Text(placeholder="path of that .out (blank = the base .out from step 1)", layout=W.Layout(width="55%"))
         add = W.Button(description="Read results")
         sets_label = W.HTML()
-        mode = W.ToggleButtons(options=[("Cut at X =", "x"), ("Cut at Y =", "y"), ("Between two nodes", "nodes")])
-        pos = W.FloatText(description="Coordinate (ft)", style=_STYLE)
-        node_a = W.IntText(description="Node A", style=_STYLE)
-        node_b = W.IntText(description="Node B", style=_STYLE)
-        tol = W.FloatText(value=0.1, description="Node pick tolerance (ft)", style=_STYLE)
-        go = W.Button(description="Cut", button_style="primary")
+        node = W.IntText(description="Node number", style=_STYLE)
+        axis = W.ToggleButtons(options=[("Plane X = node's X", "X"), ("Plane Y = node's Y", "Y"), ("Plane Z = node's Z", "Z")],
+                               description="Cut plane", style=_STYLE)
+        comp = W.Dropdown(description="Force to plot", options=list(elemforces.COMPONENTS) + ["All six"], value="M33",
+                          style=_STYLE)
+        tol = W.FloatText(value=0.1, description="In-plane tolerance (ft)", style=_STYLE)
+        width = W.IntText(value=1000, description="Plot width (px)", style=_STYLE)
+        go = W.Button(description="Cut and plot", button_style="primary")
         log = W.Output()
         out = W.Output()
 
         def refresh():
             run_of.options = ["Base"] + [f"Mirror {d}" for d in self.results]
-            sets_label.value = "Results loaded: " + (", ".join(self.cap_sets) or "none yet")
-            if self.model is not None and pos.value == 0:
-                pos.value = round(self.model.mirror_center()[0] / FT, 3)
+            sets_label.value = "Results loaded: " + (", ".join(self.elem_sets) or "none yet")
+            if self.model is not None and node.value == 0:
+                heads = self.model.pile_heads
+                if heads:
+                    node.value = heads[0].id
 
         def read(_):
             log.clear_output()
             with log:
-                if self.model is None or self.infile is None:
-                    print("Read the base files first (step 1).")
-                    return
                 path = res_path.value.strip().strip('"')
                 if not path and run_of.value != "Base":
                     print("Type the path of that run's .out file, or use app.load_results() in the cell above to upload it.")
                     return
                 self.load_results(run_of.value, path)
 
+        def cell(text, right=True):
+            return f"<td style='padding:3px 10px;border:1px solid #999{';text-align:right' if right else ''}'>{text}</td>"
+
         def run(_):
             out.clear_output()
             with out:
                 try:
-                    if not self.cap_sets:
+                    if not self.elem_sets:
                         print("Read at least one results file first (cell 4a).")
                         return
                     m = self.model
-                    x0, x1, y0, y1 = m.cap_extents()
                     try:
-                        if mode.value == "x":
-                            p0, p1, sweep_axis = (pos.value * FT, y0), (pos.value * FT, y1), "x"
-                        elif mode.value == "y":
-                            p0, p1, sweep_axis = (x0, pos.value * FT), (x1, pos.value * FT), "y"
-                        else:
-                            a, b = m.nodes[node_a.value], m.nodes[node_b.value]
-                            p0, p1, sweep_axis = (a.x, a.y), (b.x, b.y), None
-                    except KeyError as exc:
-                        print(f"Node {exc} is not in the model.")
+                        plane = elemforces.select_plane(m, node.value, axis.value, tol.value * FT)
+                    except KeyError:
+                        print(f"Node {node.value} is not in the model.")
                         return
-                    on = cuts.nodes_on_line(m, p0, p1, tol.value * FT)
-                    els = cuts.elements_on_line(m, p0, p1)
-                    print(f"Cut from ({p0[0] / FT:.3f}, {p0[1] / FT:.3f}) to ({p1[0] / FT:.3f}, {p1[1] / FT:.3f}) ft: "
-                          f"{len(on)} pile cap nodes on the line, {len(els)} cap elements crossed.")
-                    rows = []
-                    per_combo = None
-                    for name, capf in self.cap_sets.items():
-                        res = cuts.cut(capf, p0, p1)
-                        s = res.summary()
-                        rows.append("<tr><td style='padding:3px 10px;border:1px solid #999'><b>%s</b></td>%s"
-                                    "<td style='padding:3px 10px;border:1px solid #999;text-align:right'>%s</td></tr>" % (
-                                        html.escape(name),
-                                        "".join(f"<td style='padding:3px 10px;border:1px solid #999;text-align:right'>{v:,.1f}</td>"
-                                                f"<td style='padding:3px 10px;border:1px solid #999;text-align:right'>{c}</td>"
-                                                for v, c in s.values()),
-                                        f"{float(np.abs(res.unbalance).max()):,.0f}"))
-                        if per_combo is None:
-                            per_combo = viz.envelope_figure(
-                                res.combos, {"Max": list(res.moment_max), "Min": list(res.moment_min)},
-                                f"Moment on the cut, every load combination ({name})", "Moment (kip-ft)", x_title="Load combination")
-                            shear_fig = viz.envelope_figure(
-                                res.combos, {"Shear": list(res.shear_abs)},
-                                f"Vertical shear on the cut, every load combination ({name})", "Shear (kips)", x_title="Load combination")
-                    head = ("<tr><th style='padding:3px 10px;border:1px solid #999'>Results</th>"
-                            + "".join(f"<th style='padding:3px 10px;border:1px solid #999'>{h}</th>"
-                                      "<th style='padding:3px 10px;border:1px solid #999'>Comb</th>"
-                                      for h in ("Max. moment (+), bottom steel, kip-ft", "Min. moment (-), top steel, kip-ft",
-                                                "Max. shear (abs), kips"))
-                            + "<th style='padding:3px 10px;border:1px solid #999'>Two-side difference, kip-ft</th></tr>")
-                    display(HTML(f"<table style='border-collapse:collapse;font-size:13px'>{head}{''.join(rows)}</table>"
-                                 "<div style='font-size:12px;color:#666'>Totals across the full cut, from statics of the pile cap "
-                                 "(pile heads, columns, self weight, cap loads). Two-side difference = moment by which the two sides "
-                                 "of the cut disagree; it builds up on the heavier side, so the values shown are taken from the lighter side. A column or pile on the line "
-                                 "applies its moment at the cut, so the two faces differ there and the larger is reported.</div>"))
-                    per_combo.show()
-                    shear_fig.show()
-                    if sweep_axis:
-                        lo, hi = (x0, x1) if sweep_axis == "x" else (y0, y1)
-                        stations = np.linspace(lo, hi, 61)
+                    n0 = m.nodes[node.value]
+                    print(f"Node {n0.id} is at X = {n0.x / FT:.3f}, Y = {n0.y / FT:.3f}, Z = {n0.z / FT:.3f} ft. "
+                          f"Cut plane: {AXIS_WORDS[axis.value]} = {plane.value / FT:.3f} ft.")
+                    print(f"On the plane: {len(plane.nodes)} nodes, {len(plane.frame_elems)} frame elements in "
+                          f"{len(plane.members)} members"
+                          + (f", {len(plane.cap_elems)} pile cap elements" if m.cap_elements else "") + ".")
+                    if not plane.frame_elems:
+                        print("No frame element lies in this plane. Pick a node on a pile, column or cap beam, or another axis.")
+
+                    # pile cap totals by statics on the same plane
+                    if axis.value in ("X", "Y") and self.cap_sets:
+                        x0, x1, y0, y1 = m.cap_extents()
+                        if axis.value == "X":
+                            p0, p1 = (plane.value, y0), (plane.value, y1)
+                        else:
+                            p0, p1 = (x0, plane.value), (x1, plane.value)
+                        rows = []
                         for name, capf in self.cap_sets.items():
-                            env = cuts.sweep(capf, sweep_axis, stations)
-                            viz.envelope_figure(
-                                list(stations / FT), {"Max": list(env["Max moment"]), "Min": list(env["Min moment"])},
-                                f"Max / min moment for cuts along {sweep_axis.upper()}, all combinations ({name})",
-                                "Moment (kip-ft)", x_title=f"Cut position, {sweep_axis.upper()} (ft)").show()
-                            viz.envelope_figure(
-                                list(stations / FT), {"Max shear": list(env["Max shear"])},
-                                f"Max shear for cuts along {sweep_axis.upper()}, all combinations ({name})",
-                                "Shear (kips)", x_title=f"Cut position, {sweep_axis.upper()} (ft)").show()
-                    fig = viz.model_figure(m, show_pile_nodes=False, max_pile_depth=120.0, title="Section cut", height=520, show_elements=False, width=1000)
-                    viz.add_cut(fig, p0, p1, m.cap_z, [(n.x, n.y, n.z) for _, n in on])
+                            res = cuts.cut(capf, p0, p1)
+                            rows.append("<tr>" + cell(f"<b>{html.escape(name)}</b>", False)
+                                        + "".join(cell(f"{v:,.1f}") + cell(c) for v, c in res.summary().values())
+                                        + cell(f"{float(np.abs(res.unbalance).max()):,.0f}") + "</tr>")
+                        head = ("<tr><th style='padding:3px 10px;border:1px solid #999'>Results</th>"
+                                + "".join(f"<th style='padding:3px 10px;border:1px solid #999'>{h}</th>"
+                                          "<th style='padding:3px 10px;border:1px solid #999'>Comb</th>"
+                                          for h in ("Max. moment (+), bottom steel, kip-ft", "Min. moment (-), top steel, kip-ft",
+                                                    "Max. shear (abs), kips"))
+                                + "<th style='padding:3px 10px;border:1px solid #999'>Two-side difference, kip-ft</th></tr>")
+                        display(HTML("<h4 style='margin:10px 0 4px'>Pile cap on this plane (totals across the full cut, by statics)</h4>"
+                                     f"<table style='border-collapse:collapse;font-size:13px'>{head}{''.join(rows)}</table>"
+                                     "<div style='font-size:12px;color:#666'>The .out has no pile cap shell forces, so these are "
+                                     "resultants of pile heads, columns, self weight and cap loads on one side of the plane.</div>"))
+
+                    # frame elements in the plane: max / min of every member
+                    comps = list(elemforces.COMPONENTS) if comp.value == "All six" else [comp.value]
+                    for name, forces in self.elem_sets.items():
+                        if not plane.frame_elems:
+                            break
+                        rows = elemforces.summary_rows(forces, plane)
+                        body = "".join(
+                            "<tr>" + cell(html.escape(r[0]), False) + cell(r[1], False) + cell(f"{r[2]:,.2f}") + cell(r[3]) + cell(r[4])
+                            + cell(f"{r[5]:,.2f}") + cell(r[6]) + cell(r[7]) + "</tr>"
+                            for r in rows if r[1] in comps)
+                        display(HTML(
+                            f"<h4 style='margin:14px 0 4px'>Element forces on the plane: {html.escape(name)}</h4>"
+                            "<details><summary>Max and min per member (table)</summary>"
+                            "<table style='border-collapse:collapse;font-size:12px'><tr>"
+                            + "".join(f"<th style='padding:3px 10px;border:1px solid #999'>{h}</th>" for h in
+                                      ("Member", "Force", "Max", "Element", "Comb", "Min", "Element", "Comb"))
+                            + f"</tr>{body}</table><div style='font-size:12px;color:#666'>FAX, F22, F33 in kips; M22, M33, "
+                            "TORQUE in kip-ft; element local axes, internal-force sign (continuous along a member).</div></details>"))
+                        for c in comps:
+                            for fig in elemforces.envelope_figures(forces, plane, c, name, width.value or None, m):
+                                fig.show()
+
+                    fig = viz.model_figure(m, show_pile_nodes=False, title="Elements on the cut plane", height=560,
+                                           show_elements=False, width=width.value or None)
+                    on = set(plane.frame_elems)
+                    segs = [((m.nodes[e.i].x, m.nodes[e.i].y, m.nodes[e.i].z), (m.nodes[e.j].x, m.nodes[e.j].y, m.nodes[e.j].z))
+                            for e in m.frame_elements if e.id in on]
+                    viz.add_highlight(fig, segs, [(m.nodes[i].x, m.nodes[i].y, m.nodes[i].z) for i in plane.nodes],
+                                      (n0.x, n0.y, n0.z))
                     fig.show()
-                    table = "".join(f"<tr><td style='padding:1px 10px'>{n.id}</td><td style='padding:1px 10px;text-align:right'>{s / FT:.3f}</td>"
-                                    f"<td style='padding:1px 10px;text-align:right'>{n.x / FT:.3f}</td><td style='padding:1px 10px;text-align:right'>{n.y / FT:.3f}</td>"
-                                    f"<td style='padding:1px 10px'>{'pile ' + str(n.pile) if n.pile_head else ''}</td></tr>" for s, n in on)
-                    display(HTML("<details><summary>Nodes on the cut line (%d) and elements crossed (%d)</summary>"
-                                 "<table style='font-size:12px'><tr><th>Node</th><th>Station (ft)</th><th>X (ft)</th><th>Y (ft)</th><th></th></tr>%s</table>"
-                                 "<div style='font-size:12px'>Elements: %s</div></details>"
-                                 % (len(on), len(els), table, ", ".join(str(e.id) for e in els))))
                 except Exception as exc:
                     print(f"Something went wrong: {type(exc).__name__}: {exc}")
-
 
         add.on_click(read)
         go.on_click(run)
         self._listeners.append(refresh)
         refresh()
         return W.VBox([
-            W.HTML("<b>4. Section cut</b> &nbsp; read the .out of the base run and of each mirrored run, then cut the pile cap "
-                   "on a line. Moment and shear are totals on the cut for every load combination."),
+            W.HTML("<b>4. Section cut</b> &nbsp; give a node number and an axis. The cut plane passes through that node, "
+                   "normal to the axis; every element lying in the plane is collected and its forces are plotted as "
+                   "max / min over all load combinations."),
             W.HBox([run_of, res_path]), add, sets_label, log,
-            mode, W.HBox([pos, node_a, node_b, tol]), go, out,
+            W.HBox([node, comp]), axis, W.HBox([tol, width]), go, out,
         ])

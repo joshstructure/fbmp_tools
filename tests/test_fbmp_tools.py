@@ -1,6 +1,8 @@
 import subprocess
 import sys
 import unittest
+
+import numpy as np
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -147,7 +149,7 @@ class BrowserFilterTests(unittest.TestCase):
 const fs = require('fs');
 const keep = makeOutFilter();
 const lines = fs.readFileSync(process.argv[2], 'latin1').split('\\n').map(l => l.endsWith('\\r') ? l.slice(0, -1) : l);
-fs.writeFileSync(process.argv[3], lines.filter(keep).join('\\n') + '\\n', 'latin1');
+fs.writeFileSync(process.argv[3], lines.map(keep).filter(l => l !== null).join('\\n') + '\\n', 'latin1');
 """
         with tempfile.TemporaryDirectory() as tmp:
             src, dst, js = (str(Path(tmp) / n) for n in ("full.out", "trim.out", "run.js"))
@@ -167,6 +169,43 @@ fs.writeFileSync(process.argv[3], lines.filter(keep).join('\\n') + '\\n', 'latin
         r2 = read_results(small.splitlines(keepends=True), m2)
         self.assertEqual(r1, r2)
         self.assertEqual(len(r2[1].pile_head), 4)
+        from fbmp_tools import elemforces
+        f1 = elemforces.read_element_forces(full.splitlines(keepends=True), m1)
+        f2 = elemforces.read_element_forces(small.splitlines(keepends=True), m2)
+        self.assertEqual(f1.combos, f2.combos)
+        self.assertTrue(np.array_equal(f1.data, f2.data, equal_nan=True))
+        self.assertFalse(np.isnan(f2.data).all())
+
+
+class ElementForceTests(unittest.TestCase):
+    def setUp(self):
+        from fbmp_tools import elemforces
+        self.ef = elemforces
+        self.model, _ = load()
+        self.forces = elemforces.read_element_forces(fixture.out_text().splitlines(keepends=True), self.model)
+
+    def test_reads_both_ends_and_internal_sign(self):
+        f = self.forces
+        row = f.index[1]                                   # the column
+        self.assertEqual(f.nodes[row].tolist(), [30, 31])
+        self.assertAlmostEqual(f.data[0, row, 0, 0], fixture.COLUMN_LOAD[1])
+        self.assertAlmostEqual(f.data[0, row, 1, 0], -fixture.COLUMN_LOAD[1])
+        internal = f.internal()[0, row, :, 0]
+        self.assertAlmostEqual(internal[0], internal[1])    # continuous along the member
+        vmax, vmin, cmax, cmin = f.envelope()
+        self.assertAlmostEqual(vmin[row, 1, 0], -fixture.COLUMN_LOAD[1])
+        self.assertEqual(int(cmin[row, 1, 0]), 1)
+
+    def test_plane_from_node_and_axis(self):
+        plane = self.ef.select_plane(self.model, 1, "X")        # x = 0: piles 1 and 3
+        self.assertEqual(sorted(plane.frame_elems), [11, 13])
+        self.assertEqual(sorted(m.label for m in plane.members), ["Pile 1", "Pile 3"])
+        self.assertEqual(plane.cap_elems, [1])
+        plane = self.ef.select_plane(self.model, 30, "Y")       # y = 60: the column and the pier cap beam
+        self.assertEqual(sorted(plane.frame_elems), [1, 2, 3])
+        self.assertEqual(sorted((m.kind, m.direction, len(m.elems)) for m in plane.members), [("pier", 0, 2), ("pier", 2, 1)])
+        figs = self.ef.envelope_figures(self.forces, plane, "FAX")
+        self.assertTrue(figs)
 
 
 class NotebookTests(unittest.TestCase):

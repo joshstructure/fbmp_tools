@@ -2,9 +2,9 @@
 
 A .out file can be hundreds of MB, far too much to push through a notebook
 upload.  The tools need only the input echo (nodes, elements, combinations)
-and, per load combination, the pile-head, connector and column-base force rows.
-The browser reads the file locally, keeps those lines (a few MB) and sends
-only them to the notebook.  .in files are sent whole, byte for byte.
+and, per load combination, the element force tables (piles and substructure).
+The browser reads the file locally, keeps those lines and sends only them to the
+notebook (roughly a tenth of the file).  .in files are sent whole, byte for byte.
 """
 from __future__ import annotations
 
@@ -19,27 +19,30 @@ from typing import Callable, Dict, List
 # tests/test_fbmp_tools.py runs it under node and compares against the full file.
 FILTER_JS = r"""
 function makeOutFilter() {
-  let stage2 = false, mode = '', need = false;
+  // Returns the line to keep (data rows with their spaces collapsed) or null to drop it.
+  let stage2 = false, inSub = false, inPile = false, table = false;
   return function (line) {
     if (!stage2) {
       if (line.indexOf('OUTPUT STAGE 2') >= 0) stage2 = true;
-      return true;
+      return line;
     }
-    if (line.indexOf('RESULTS FOR LOAD COMBINATION') >= 0) { mode = ''; return true; }
-    if (line.startsWith(' -') || line.startsWith(' *') || line.startsWith(' _')) {
-      if (/- Pile Number\s+\d+/.test(line)) { mode = 'pile'; need = true; return true; }
-      if (line.indexOf('- Connector Beam Sections') >= 0) { mode = 'connector'; return true; }
-      if (/- Column Sections For Column Number\s+\d+/.test(line)) { mode = 'column'; need = true; return true; }
-      if (line.startsWith(' - ') || line.startsWith(' **')) {
-        const was = mode; mode = ''; return was !== '';
-      }
-      return false;
+    if (line.indexOf('RESULTS FOR LOAD COMBINATION') >= 0) { inSub = false; inPile = false; table = false; return line; }
+    const head = line.substring(0, 2);
+    if (head === ' *') {
+      if (line.indexOf('ANALYTICAL FORCE RESULTS FOR SUBSTRUCTURE') >= 0) { inSub = true; inPile = false; table = false; }
+      else if (/[A-Za-z]/.test(line)) { inSub = false; inPile = false; table = false; }
+      else { table = false; }
+      return line;
     }
-    if (mode === 'connector') return /^\s*\d/.test(line);
-    if ((mode === 'pile' || mode === 'column') && need) {
-      if (/^\s*\d+\s+\d+\s+\d+\s+\d+\s+-?\d/.test(line)) { need = false; return true; }
+    if (head === ' _') { table = false; return null; }
+    if (head === ' -') {
+      if (!line.startsWith(' - ')) return null;
+      if (line.indexOf('- Analytical Force Results for each Pile') >= 0) inPile = true;
+      table = inSub || (inPile && line.indexOf('- Pile Number') >= 0);
+      return line;
     }
-    return false;
+    if (table && /^\s*\d/.test(line)) return line.trim().replace(/\s+/g, ' ');
+    return null;
   };
 }
 """
@@ -92,12 +95,13 @@ FILTER
       carry = lines.pop();
       for (let line of lines) {
         if (line.endsWith('\r')) line = line.slice(0, -1);
-        if (keep(line)) { out.push(line); size += line.length + 1; }
+        const kept1 = keep(line);
+        if (kept1 !== null) { out.push(kept1); size += kept1.length + 1; }
+        if (size > 1000000) await flush();
       }
-      if (size > 400000) await flush();
       st.textContent = file.name + ': read ' + mb(read) + ' of ' + mb(file.size) + ' in the browser, sending ' + mb(kept + size);
     }
-    if (carry && keep(carry)) out.push(carry);
+    if (carry) { const last = keep(carry); if (last !== null) out.push(last); }
     await flush();
   }
 
