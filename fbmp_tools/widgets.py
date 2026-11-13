@@ -18,7 +18,7 @@ import ipywidgets as W
 import numpy as np
 from IPython.display import HTML, display
 
-from . import cuts, viz
+from . import colab_upload, cuts, viz
 from .infile import COMPONENTS, InFile, load_family, parse_in
 from .mirror import DEFAULT_FAMILIES, DIRECTIONS, MirrorResult, format_report, mirror_loads
 from .outfile import OutModel, read_model, read_results
@@ -78,16 +78,6 @@ class FbmpApp:
         self._listeners: List = []
 
     # ------------------------------------------------------------------ files
-    @staticmethod
-    def _colab_upload(prompt: str) -> Dict[str, bytes]:
-        """Colab's own file chooser (works for large files); {} outside Colab."""
-        try:
-            from google.colab import files          # type: ignore
-        except Exception:
-            return {}
-        print(prompt)
-        return files.upload()                       # also saves each file in the working folder
-
     def _read_base(self, name_in: str, data_in, name_out: str, src_out) -> None:
         if isinstance(data_in, str):
             with open(data_in, "rb") as fh:
@@ -117,37 +107,36 @@ class FbmpApp:
             fn()
 
     def load_base(self, in_path: str = "", out_path: str = ""):
-        """Read the base model.  Paths are used when given; otherwise Colab asks for the files
-        (pick the .in and the .out together); outside Colab the upload panel is shown."""
+        """Read the base model.  With both paths given they are read directly.  Otherwise, in Colab a
+        file chooser is shown (pick the .in and the .out together; the .out is trimmed in the browser,
+        so its size does not matter); outside Colab the upload panel is shown."""
         in_path = (in_path or "").strip().strip('"')
         out_path = (out_path or "").strip().strip('"')
-        try:
-            for path in (in_path, out_path):
-                if path and not os.path.exists(path):
-                    print(f"File not found: {path}")
-                    return None
-            if not (in_path and out_path):
-                wanted = " and ".join(n for n, have in ((".in", in_path), (".out", out_path)) if not have)
-                got = self._colab_upload(f"Choose the base {wanted} file (select both together if both are needed). "
-                                         "A large .out takes a few minutes to upload.")
-                if not got and not (in_path or out_path):
-                    try:
-                        import google.colab          # type: ignore  # noqa: F401
-                    except Exception:
-                        return display(self.import_panel())
-                for name in got:
-                    low = name.lower()
-                    if low.endswith(".in") and not in_path:
-                        in_path = name
-                    elif low.endswith(".out") and not out_path:
-                        out_path = name
-                del got
-                if not (in_path and out_path):
-                    print("Need one .in file and one .out file. Run this cell again and select both.")
-                    return None
-            self._read_base(os.path.basename(in_path), in_path, os.path.basename(out_path), out_path)
-        except Exception as exc:
-            print(f"Could not read the files: {exc}")
+        for path in (in_path, out_path):
+            if path and not os.path.exists(path):
+                print(f"File not found: {path}")
+                return None
+        if in_path and out_path:
+            try:
+                self._read_base(os.path.basename(in_path), in_path, os.path.basename(out_path), out_path)
+            except Exception as exc:
+                print(f"Could not read the files: {exc}")
+            return None
+        if not colab_upload.in_colab():
+            return display(self.import_panel())
+
+        def done(files: Dict[str, str]):
+            pin = in_path or next((p for n, p in files.items() if n.lower().endswith(".in")), "")
+            pout = out_path or next((p for n, p in files.items() if n.lower().endswith(".out")), "")
+            if not (pin and pout):
+                print("Need one .in file and one .out file: choose both together.")
+                return
+            self._read_base(os.path.basename(pin), pin, os.path.basename(pout), pout)
+
+        colab_upload.show_uploader(
+            "<b>Choose the base .in and .out files together</b> (hold Ctrl to select both). "
+            "The .out is read in your browser and only the few MB the tool needs are sent, so a large file is fine.",
+            done)
         return None
 
     def _read_results(self, run_of: str, source) -> None:
@@ -178,27 +167,34 @@ class FbmpApp:
 
     def load_results(self, run_of: str = "Base", path: str = ""):
         """Read the .out of a run for the section cuts.  run_of: 'Base', 'Mirror X', 'Mirror Y' or 'Mirror XY'.
-        Blank path: the base .out from step 1 for 'Base'; otherwise Colab asks for the file."""
+        Blank path: the base .out from step 1 for 'Base'; otherwise Colab shows a file chooser."""
         if self.model is None or self.infile is None:
             print("Read the base files first (step 1).")
             return
         path = (path or "").strip().strip('"')
-        try:
-            if path and not os.path.exists(path):
-                print(f"File not found: {path}")
+        if path and not os.path.exists(path):
+            print(f"File not found: {path}")
+            return
+        if not path and run_of == "Base":
+            path = self.base_out
+        if path:
+            try:
+                self._read_results(run_of, path)
+            except Exception as exc:
+                print(f"Could not read the results: {exc}")
+            return
+        if not colab_upload.in_colab():
+            print("Type the path of that run's .out file.")
+            return
+
+        def done(files: Dict[str, str]):
+            pout = next((p for n, p in files.items() if n.lower().endswith(".out")), "")
+            if not pout:
+                print("That was not a .out file.")
                 return
-            if not path and run_of == "Base":
-                path = self.base_out
-            if not path:
-                got = self._colab_upload(f"Choose the .out file of the {run_of} run.")
-                path = next((n for n in got if n.lower().endswith(".out")), "")
-                del got
-                if not path:
-                    print("No .out file given. Type its path, or run this in Colab to upload it.")
-                    return
-            self._read_results(run_of, path)
-        except Exception as exc:
-            print(f"Could not read the results: {exc}")
+            self._read_results(run_of, pout)
+
+        colab_upload.show_uploader(f"<b>Choose the .out file of the {run_of} run.</b>", done, accept=".out", multiple=False)
 
     # ------------------------------------------------------------------ 1
     def import_panel(self):
@@ -218,7 +214,7 @@ class FbmpApp:
                     if not src_in or not src_out:
                         print("Give both the base .in file and the .out file of a run of that same model.\n"
                               "If you picked files and still see this, the browser upload did not reach the notebook "
-                              "(common in Colab, and with large .out files): use app.load_base() instead.")
+                              "(common with large .out files): type the file paths instead.")
                         return
                     self._read_base(src_in[0], src_in[1], src_out[0], src_out[1])
                 except Exception as exc:          # show the reason in the notebook, not a traceback

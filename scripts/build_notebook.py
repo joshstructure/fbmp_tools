@@ -90,8 +90,9 @@ Run the cells in order. Units are those of the model (kips and inches in the .in
         code(setup),
         code('''
 # @title 1. Import the base model (.in and .out)
-# @markdown Run this cell and choose **both** files (the base `.in` and the `.out` of a run of that model).
-# @markdown For a large `.out`, put the files on Google Drive and type their paths here instead.
+# @markdown Run this cell, then choose **both** files together (the base `.in` and the `.out` of a run of that model).
+# @markdown The `.out` is trimmed in your browser before it is sent, so its size does not matter.
+# @markdown Or type two file paths (for example on Google Drive) and run the cell.
 in_path = ""  # @param {type:"string"}
 out_path = ""  # @param {type:"string"}
 app.load_base(in_path, out_path)
@@ -129,8 +130,9 @@ mirrored but the loads come out the same as the original, because the load patte
 (check that this is what you expect). Red: a directional load type has that component and was left unmirrored.
 Gray: the component is zero in the model.
 
-**The .out file.** Step 1 needs only the first part of the .out (node coordinates). Step 4 reads the whole file.
-Large .out files are easier to read from a path (Google Drive) than to upload through the browser.
+**The .out file.** When you choose a .out in Colab it is read in your browser and only the lines the tool uses
+(node and element tables, load combinations, pile head and column forces) are sent to the notebook: a few MB
+instead of hundreds. If a cell seems stuck, use Runtime > Disconnect and delete runtime, reload the page and start again.
 
 **Section cuts.** FB-MultiPier prints pile cap stresses only when that print option is on, and these files
 usually have it off. The cut forces here come from statics of the pile cap as a free body: pile head forces,
@@ -156,7 +158,7 @@ generated file, or the mirrored loads are overwritten.
             "language_info": {"name": "python"},
         },
         "nbformat": 4,
-        "nbformat_minor": 5,
+        "nbformat_minor": 0,
     }
     return json.dumps(nb, indent=1, ensure_ascii=False) + "\n"
 

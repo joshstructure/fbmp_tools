@@ -134,6 +134,41 @@ class CutTests(unittest.TestCase):
         self.assertEqual(len(cuts.elements_on_line(self.model, (120, 0), (120, 120))), 1)
 
 
+class BrowserFilterTests(unittest.TestCase):
+    """The JavaScript that trims a .out in the browser must not drop anything the readers use."""
+
+    def trimmed(self, text):
+        import shutil, tempfile
+        from fbmp_tools.colab_upload import FILTER_JS
+        node = shutil.which("node")
+        if not node:
+            self.skipTest("node is not installed")
+        script = FILTER_JS + """
+const fs = require('fs');
+const keep = makeOutFilter();
+const lines = fs.readFileSync(process.argv[2], 'latin1').split('\\n').map(l => l.endsWith('\\r') ? l.slice(0, -1) : l);
+fs.writeFileSync(process.argv[3], lines.filter(keep).join('\\n') + '\\n', 'latin1');
+"""
+        with tempfile.TemporaryDirectory() as tmp:
+            src, dst, js = (str(Path(tmp) / n) for n in ("full.out", "trim.out", "run.js"))
+            Path(src).write_text(text, encoding="latin-1", newline="")
+            Path(js).write_text(script, encoding="utf-8")
+            subprocess.run([node, js, src, dst], check=True)
+            return Path(dst).read_text(encoding="latin-1")
+
+    def test_trimmed_file_reads_the_same(self):
+        full = fixture.out_text()
+        small = self.trimmed(full)
+        self.assertLess(len(small), len(full))
+        m1 = read_model(full.splitlines(keepends=True))
+        m2 = read_model(small.splitlines(keepends=True))
+        self.assertEqual(m1, m2)
+        r1 = read_results(full.splitlines(keepends=True), m1)
+        r2 = read_results(small.splitlines(keepends=True), m2)
+        self.assertEqual(r1, r2)
+        self.assertEqual(len(r2[1].pile_head), 4)
+
+
 class NotebookTests(unittest.TestCase):
     def test_committed_notebook_equals_a_fresh_build(self):
         run = subprocess.run([sys.executable, str(ROOT / "scripts" / "build_notebook.py"), "--check"],
