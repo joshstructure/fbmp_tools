@@ -76,6 +76,129 @@ class FbmpApp:
         self.cap_sets: Dict[str, cuts.CapForces] = {}
         self._listeners: List = []
 
+    # ------------------------------------------------------------------ files
+    @staticmethod
+    def _colab_upload(prompt: str) -> Dict[str, bytes]:
+        """Colab's own file chooser (works for large files); {} outside Colab."""
+        try:
+            from google.colab import files          # type: ignore
+        except Exception:
+            return {}
+        print(prompt)
+        return files.upload()                       # also saves each file in the working folder
+
+    def _read_base(self, name_in: str, data_in, name_out: str, src_out) -> None:
+        if isinstance(data_in, str):
+            with open(data_in, "rb") as fh:
+                data_in = fh.read()
+        self.infile = parse_in(data_in)
+        self.model = read_model(src_out)
+        self.base_name = os.path.splitext(name_in)[0]
+        self.base_out = src_out
+        self.results.clear()
+        self.cap_sets.clear()
+        m = self.model
+        x0, x1, y0, y1 = m.cap_extents()
+        print(f"{name_in}: {len(self.infile.loads)} load lines, load types: {', '.join(self.infile.families())}")
+        print(f"{name_out}: {len(m.nodes)} nodes ({len(m.pile_heads)} piles, {len(m.cap_nodes)} cap nodes, "
+              f"{len(m.group('pier'))} pier nodes, {len(m.group('bearingL', 'bearingR'))} bearing nodes), "
+              f"{len(m.combos)} load combinations")
+        print(f"Pile cap X {x0:.1f} to {x1:.1f}, Y {y0:.1f} to {y1:.1f}; "
+              f"mirror planes X = {(x0 + x1) / 2:.2f}, Y = {(y0 + y1) / 2:.2f}")
+        if self.infile.unparsed:
+            print(f"WARNING: {len(self.infile.unparsed)} line(s) in LOAD / LOADBP were not understood "
+                  f"(first: line {self.infile.unparsed[0] + 1}); they will be copied unchanged.")
+        missing = [ld.target for ld in self.infile.loads if ld.section == "LOAD" and ld.target not in m.nodes]
+        if missing:
+            print(f"WARNING: {len(set(missing))} loaded node(s) are not in the .out file. "
+                  "Is the .out from the same model as the .in?")
+        for fn in self._listeners:
+            fn()
+
+    def load_base(self, in_path: str = "", out_path: str = ""):
+        """Read the base model.  Paths are used when given; otherwise Colab asks for the files
+        (pick the .in and the .out together); outside Colab the upload panel is shown."""
+        in_path = (in_path or "").strip().strip('"')
+        out_path = (out_path or "").strip().strip('"')
+        try:
+            for path in (in_path, out_path):
+                if path and not os.path.exists(path):
+                    print(f"File not found: {path}")
+                    return None
+            if not (in_path and out_path):
+                wanted = " and ".join(n for n, have in ((".in", in_path), (".out", out_path)) if not have)
+                got = self._colab_upload(f"Choose the base {wanted} file (select both together if both are needed). "
+                                         "A large .out takes a few minutes to upload.")
+                if not got and not (in_path or out_path):
+                    try:
+                        import google.colab          # type: ignore  # noqa: F401
+                    except Exception:
+                        return display(self.import_panel())
+                for name in got:
+                    low = name.lower()
+                    if low.endswith(".in") and not in_path:
+                        in_path = name
+                    elif low.endswith(".out") and not out_path:
+                        out_path = name
+                del got
+                if not (in_path and out_path):
+                    print("Need one .in file and one .out file. Run this cell again and select both.")
+                    return None
+            self._read_base(os.path.basename(in_path), in_path, os.path.basename(out_path), out_path)
+        except Exception as exc:
+            print(f"Could not read the files: {exc}")
+        return None
+
+    def _read_results(self, run_of: str, source) -> None:
+        if run_of == "Base":
+            infile = self.infile
+        else:
+            key = run_of.split()[-1]
+            if key not in self.results:
+                print(f"Mirror the loads first (step 2) so the {run_of} input is known.")
+                return
+            infile = parse_in(self.results[key].text)
+        print(f"Reading results for {run_of} ...")
+        results = read_results(source, self.model)
+        capf = cuts.build_cap_forces(self.model, infile, results)
+        self.cap_sets[run_of] = capf
+        resid = np.abs(capf.residual())
+        load = float(np.abs(capf.vertical_load()).max())
+        print(f"{len(capf.combos)} load combinations. Free-body check of the whole pile cap: largest unbalanced force "
+              f"{resid[:, :3].max():.1f} kips, moment {resid[:, 3:].max():.0f} kip-ft "
+              f"(total vertical load up to {load:,.0f} kips).")
+        if resid[:, :3].max() > 0.02 * max(load, 1.0):
+            print("WARNING: the pile cap free body does not close within 2 %. Do not use the cut values "
+                  "until this is understood (wrong .out for this model, or battered piles).")
+        for note in capf.notes:
+            print("Note:", note)
+        for fn in self._listeners:
+            fn()
+
+    def load_results(self, run_of: str = "Base", path: str = ""):
+        """Read the .out of a run for the section cuts.  run_of: 'Base', 'Mirror X', 'Mirror Y' or 'Mirror XY'.
+        Blank path: the base .out from step 1 for 'Base'; otherwise Colab asks for the file."""
+        if self.model is None or self.infile is None:
+            print("Read the base files first (step 1).")
+            return
+        path = (path or "").strip().strip('"')
+        try:
+            if path and not os.path.exists(path):
+                print(f"File not found: {path}")
+                return
+            if not path and run_of == "Base":
+                path = self.base_out
+            if not path:
+                got = self._colab_upload(f"Choose the .out file of the {run_of} run.")
+                path = next((n for n in got if n.lower().endswith(".out")), "")
+                del got
+                if not path:
+                    print("No .out file given. Type its path, or run this in Colab to upload it.")
+                    return
+            self._read_results(run_of, path)
+        except Exception as exc:
+            print(f"Could not read the results: {exc}")
+
     # ------------------------------------------------------------------ 1
     def import_panel(self):
         in_up = W.FileUpload(accept=".in", multiple=False, description="Base .in file")
@@ -92,35 +215,11 @@ class FbmpApp:
                     src_in = _source(in_up, in_path)
                     src_out = _source(out_up, out_path)
                     if not src_in or not src_out:
-                        print("Give both the base .in file and the .out file of a run of that same model.")
+                        print("Give both the base .in file and the .out file of a run of that same model.\n"
+                              "If you picked files and still see this, the browser upload did not reach the notebook "
+                              "(common in Colab, and with large .out files): use app.load_base() instead.")
                         return
-                    data = src_in[1]
-                    if isinstance(data, str):
-                        with open(data, "rb") as fh:
-                            data = fh.read()
-                    self.infile = parse_in(data)
-                    self.model = read_model(src_out[1])
-                    self.base_name = os.path.splitext(src_in[0])[0]
-                    self.base_out = src_out[1]
-                    self.results.clear()
-                    self.cap_sets.clear()
-                    m = self.model
-                    x0, x1, y0, y1 = m.cap_extents()
-                    print(f"{src_in[0]}: {len(self.infile.loads)} load lines, load types: {', '.join(self.infile.families())}")
-                    print(f"{src_out[0]}: {len(m.nodes)} nodes ({len(m.pile_heads)} piles, {len(m.cap_nodes)} cap nodes, "
-                          f"{len(m.group('pier'))} pier nodes, {len(m.group('bearingL', 'bearingR'))} bearing nodes), "
-                          f"{len(m.combos)} load combinations")
-                    print(f"Pile cap X {x0:.1f} to {x1:.1f}, Y {y0:.1f} to {y1:.1f}; "
-                          f"mirror planes X = {(x0 + x1) / 2:.2f}, Y = {(y0 + y1) / 2:.2f}")
-                    if self.infile.unparsed:
-                        print(f"WARNING: {len(self.infile.unparsed)} line(s) in LOAD / LOADBP were not understood "
-                              f"(first: line {self.infile.unparsed[0] + 1}); they will be copied unchanged.")
-                    missing = [ld.target for ld in self.infile.loads if ld.section == "LOAD" and ld.target not in m.nodes]
-                    if missing:
-                        print(f"WARNING: {len(set(missing))} loaded node(s) are not in the .out file. "
-                              "Is the .out from the same model as the .in?")
-                    for fn in self._listeners:
-                        fn()
+                    self._read_base(src_in[0], src_in[1], src_out[0], src_out[1])
                 except Exception as exc:          # show the reason in the notebook, not a traceback
                     print(f"Could not read the files: {exc}")
 
@@ -205,11 +304,12 @@ class FbmpApp:
                         for p in written:
                             z.write(p, os.path.basename(p))
                     print(f"\nWrote {len(written)} files to {os.path.abspath(self.output_dir)}")
+                    print(f"Zip of all files: {zpath}  (in Colab: Files panel on the left, right-click, Download)")
                     try:
                         from google.colab import files       # type: ignore
                         files.download(zpath)
                     except Exception:
-                        print(f"Zip: {os.path.abspath(zpath)}")
+                        pass
                     for fn in self._listeners:
                         fn()
                 except Exception as exc:
@@ -279,8 +379,7 @@ class FbmpApp:
     # ------------------------------------------------------------------ 4
     def cut_panel(self):
         run_of = W.Dropdown(description="This .out is a run of", options=["Base"], style=_STYLE)
-        res_up = W.FileUpload(accept=".out", multiple=False, description="Results .out")
-        res_path = W.Text(placeholder="or a path (blank + no upload = the base .out from step 1)", layout=W.Layout(width="55%"))
+        res_path = W.Text(placeholder="path of that .out (blank = the base .out from step 1)", layout=W.Layout(width="55%"))
         add = W.Button(description="Read results")
         sets_label = W.HTML()
         mode = W.ToggleButtons(options=[("Cut at X =", "x"), ("Cut at Y =", "y"), ("Between two nodes", "nodes")])
@@ -304,33 +403,11 @@ class FbmpApp:
                 if self.model is None or self.infile is None:
                     print("Read the base files first (step 1).")
                     return
-                try:
-                    src = _source(res_up, res_path)
-                    source = src[1] if src else (self.base_out if run_of.value == "Base" else None)
-                    if source is None:
-                        print("Upload the .out file of that run, or give its path.")
-                        return
-                    if run_of.value == "Base":
-                        infile = self.infile
-                    else:
-                        infile = parse_in(self.results[run_of.value.split()[-1]].text)
-                    print(f"Reading results for {run_of.value} ...")
-                    results = read_results(source, self.model)
-                    capf = cuts.build_cap_forces(self.model, infile, results)
-                    self.cap_sets[run_of.value] = capf
-                    resid = np.abs(capf.residual())
-                    load = float(np.abs(capf.vertical_load()).max())
-                    print(f"{len(capf.combos)} load combinations. Free-body check of the whole pile cap: largest unbalanced force "
-                          f"{resid[:, :3].max():.1f} kips, moment {resid[:, 3:].max():.0f} kip-ft "
-                          f"(total vertical load up to {load:,.0f} kips).")
-                    if resid[:, :3].max() > 0.02 * max(load, 1.0):
-                        print("WARNING: the pile cap free body does not close within 2 %. Do not use the cut values "
-                              "until this is understood (wrong .out for this model, or battered piles).")
-                    for note in capf.notes:
-                        print("Note:", note)
-                    refresh()
-                except Exception as exc:
-                    print(f"Could not read the results: {exc}")
+                path = res_path.value.strip().strip('"')
+                if not path and run_of.value != "Base":
+                    print("Type the path of that run's .out file, or use app.load_results() in the cell above to upload it.")
+                    return
+                self.load_results(run_of.value, path)
 
         def run(_):
             out.clear_output()
@@ -418,6 +495,6 @@ class FbmpApp:
         return W.VBox([
             W.HTML("<b>4. Section cut</b> &nbsp; read the .out of the base run and of each mirrored run, then cut the pile cap "
                    "on a line. Moment and shear are totals on the cut for every load combination."),
-            W.HBox([run_of, res_up, res_path]), add, sets_label, log,
+            W.HBox([run_of, res_path]), add, sets_label, log,
             mode, W.HBox([pos, node_a, node_b, tol]), go, out,
         ])

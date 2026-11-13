@@ -90,7 +90,11 @@ Run the cells in order. Units are those of the model (kips and inches in the .in
         code(setup),
         code('''
 # @title 1. Import the base model (.in and .out)
-display(app.import_panel())
+# @markdown Run this cell and choose **both** files (the base `.in` and the `.out` of a run of that model).
+# @markdown For a large `.out`, put the files on Google Drive and type their paths here instead.
+in_path = ""  # @param {type:"string"}
+out_path = ""  # @param {type:"string"}
+app.load_base(in_path, out_path)
 '''),
         code('''
 # @title 2. Choose the load cases to mirror, then mirror
@@ -101,7 +105,15 @@ display(app.mirror_panel())
 display(app.view_panel())
 '''),
         code('''
-# @title 4. Section cut: max and min forces
+# @title 4a. Read results for the section cuts
+# @markdown "Base" with a blank path reads the `.out` from step 1. For a mirrored run, choose it and run the cell:
+# @markdown you are asked for that run's `.out` (or type its path). Run once per results file.
+run_of = "Base"  # @param ["Base", "Mirror X", "Mirror Y", "Mirror XY"]
+results_path = ""  # @param {type:"string"}
+app.load_results(run_of, results_path)
+'''),
+        code('''
+# @title 4b. Section cut: max and min forces
 display(app.cut_panel())
 '''),
         md('''
