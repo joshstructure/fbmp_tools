@@ -271,7 +271,12 @@ def mirror_loads(
                            f"(nearest is {new_target}{new_side}, {dist:.1f} off).")
                     if msg not in warnings:
                         warnings.append(msg)
-            else:   # no bearing coordinates: fall back to the index rule
+            elif geo.bearing:   # other bearings have coordinates but this one does not: do not guess
+                msg = (f"Bearing {ld.target}{ld.side} is not in the .out file; its loads keep their bearing "
+                       f"(components still change sign). Check them by hand.")
+                if msg not in warnings:
+                    warnings.append(msg)
+            else:   # no bearing coordinates at all: use the index rule
                 if "X" in direction:
                     if not geo.n_bearings:
                         raise ValueError("Bearing count unknown; cannot mirror LOADBP in X.")

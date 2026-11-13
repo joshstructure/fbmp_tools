@@ -361,12 +361,12 @@ class FbmpApp:
                     res = cuts.cut(capf, p0, p1)
                     s = res.summary()
                     rows.append("<tr><td style='padding:3px 10px;border:1px solid #999'><b>%s</b></td>%s"
-                                "<td style='padding:3px 10px;border:1px solid #999;text-align:right'>%.2f %%</td></tr>" % (
+                                "<td style='padding:3px 10px;border:1px solid #999;text-align:right'>%s</td></tr>" % (
                                     html.escape(name),
                                     "".join(f"<td style='padding:3px 10px;border:1px solid #999;text-align:right'>{v:,.1f}</td>"
                                             f"<td style='padding:3px 10px;border:1px solid #999;text-align:right'>{c}</td>"
                                             for v, c in s.values()),
-                                    100 * res.closure()))
+                                    f"{float(np.abs(res.unbalance).max()):,.0f}"))
                     if per_combo is None:
                         per_combo = viz.envelope_figure(
                             res.combos, {"Max": list(res.moment_max), "Min": list(res.moment_min)},
@@ -379,11 +379,11 @@ class FbmpApp:
                                   "<th style='padding:3px 10px;border:1px solid #999'>Comb</th>"
                                   for h in ("Max. moment (+), bottom steel, kip-ft", "Min. moment (-), top steel, kip-ft",
                                             "Max. shear (abs), kips"))
-                        + "<th style='padding:3px 10px;border:1px solid #999'>Statics check</th></tr>")
+                        + "<th style='padding:3px 10px;border:1px solid #999'>Two-side difference, kip-ft</th></tr>")
                 display(HTML(f"<table style='border-collapse:collapse;font-size:13px'>{head}{''.join(rows)}</table>"
                              "<div style='font-size:12px;color:#666'>Totals across the full cut, from statics of the pile cap "
-                             "(pile heads, columns, self weight, cap loads). Statics check = moment that does not close "
-                             "between the two sides of the cut; values are taken from the lighter side. A column or pile on the line "
+                             "(pile heads, columns, self weight, cap loads). Two-side difference = moment by which the two sides "
+                             "of the cut disagree; it builds up on the heavier side, so the values shown are taken from the lighter side. A column or pile on the line "
                              "applies its moment at the cut, so the two faces differ there and the larger is reported.</div>"))
                 per_combo.show()
                 shear_fig.show()

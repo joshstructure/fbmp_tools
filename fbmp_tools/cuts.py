@@ -23,6 +23,7 @@ equilibrium residual before using results from one.
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Sequence, Tuple
 
@@ -96,6 +97,22 @@ def _frame_lookup(model: OutModel):
     return by_id, by_node
 
 
+def _precise_thickness(infile: Optional[InFile]) -> List[float]:
+    """Self-weight thicknesses as entered in the .in CAP section (the .out rounds them to 0.01 ft)."""
+    if infile is None:
+        return []
+    found = set()
+    for line, sec in zip(infile.lines, infile.sections):
+        if sec == "CAP":
+            m = re.search(r"T=\s*[-+0-9.eE]+\s*,\s*([-+0-9.eE]+)", line)
+            if m:
+                try:
+                    found.add(float(m.group(1)))
+                except ValueError:
+                    pass
+    return sorted(found)
+
+
 def _xyz(model: OutModel, node: int) -> np.ndarray:
     n = model.nodes[node]
     return np.array([n.x, n.y, n.z])
@@ -157,7 +174,12 @@ def build_cap_forces(model: OutModel, infile: Optional[InFile], results: Dict[in
     sw_start = len(points)
     weights: List[float] = []
     gamma = (model.cap_unit_weight_pcf or 0.0) / 1000.0            # kcf
+    precise = _precise_thickness(infile)
     for el in model.cap_elements:
+        thick_sw = el.thick_sw
+        match = [t for t in precise if abs(t - thick_sw) <= 0.00501]
+        if len(match) == 1:
+            thick_sw = match[0]
         nd = [model.nodes[i] for i in el.nodes]
         for a, b, c, d in ((0, 1, 4, 3), (1, 2, 5, 4), (3, 4, 7, 6), (4, 5, 8, 7)):
             quad = [nd[a], nd[b], nd[c], nd[d]]
@@ -167,7 +189,7 @@ def build_cap_forces(model: OutModel, infile: Optional[InFile], results: Dict[in
                 continue
             points.append(np.array([xs.mean(), ys.mean(), nd[4].z])); kind.append("self weight")
             label.append(f"Cap element {el.id}")
-            weights.append(area / length_per_ft ** 2 * el.thick_sw * gamma)
+            weights.append(area / length_per_ft ** 2 * thick_sw * gamma)
     sw_end = len(points)
 
     # loads applied directly to pile cap nodes / pile heads
